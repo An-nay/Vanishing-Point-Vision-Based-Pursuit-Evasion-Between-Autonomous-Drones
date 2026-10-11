@@ -4,7 +4,7 @@ A pursuit-evasion RL project: a PPO-controlled **Evader** drone learns to stay o
 
 - **Phase 1** — built the physics/geometry simulator, a scripted Seeker (TRACK / SCAN / SEARCH), and a random-Evader baseline to sanity-check the environment.
 - **Phase 2** — trained the Evader with PPO, both plainly and with a 4-stage difficulty curriculum, validated across 3 seeds, and added an automated test suite.
-- **Stage 2 (not started)** — replace the scripted Seeker with a *learning* Seeker (MADDPG or self-play), turning this into a genuine multi-agent Markov game.
+- **Stage 2 (implemented)** — added a PettingZoo two-agent environment and MADDPG with local actors and centralized critics; Stage 1 remains available for comparison. See [Stage 2 documentation](docs/STAGE2.md).
 
 Full write-up, tables, and figures: [`docs/Vanishing_Point_Full_Overview.pdf`](docs/Vanishing_Point_Full_Overview.pdf).
 
@@ -138,7 +138,7 @@ PPO massively outperforms random behaviour on every metric. Between the two PPO 
 
 ## Roadmap
 
-- **Stage 2**: replace the scripted Seeker with a learning Seeker under a multi-agent Markov game formulation (MADDPG or self-play).
+- **Stage 2**: run longer multi-seed MADDPG experiments and compare checkpoints against the retained PPO/scripted baselines.
 - Add a minimum drone-separation penalty.
 - Bias Seeker search waypoints toward the Evader's last known position instead of pure random sampling.
 - Give the Evader the Seeker's current mode as an extra observation.
@@ -146,3 +146,17 @@ PPO massively outperforms random behaviour on every metric. Between the two PPO 
 ## License
 
 Add a license of your choice (e.g. MIT) if you intend this to be reused — none is currently specified.
+
+## Stage 2 usage
+
+The shared simulator, PettingZoo environment, MADDPG implementation, phased training, evaluation, plots and tests are documented in [docs/STAGE2.md](docs/STAGE2.md). All Stage 1 commands above still work.
+
+```powershell
+python -m pip install -r requirements.txt
+python -m pytest -q
+python train_maddpg.py --phase validate --episodes 2
+python train_maddpg.py --phase seeker --opponent ppo --opponent-model models/ppo_500k.zip --output runs/phase_b
+python train_maddpg.py --phase simultaneous --output runs/phase_c --seeds 2001 2002 2003
+```
+
+Headless training uses CPU and does not import PyBullet. Add `--render` for playback. Checkpoints and CSV outputs go to ignored `runs/` directories; existing PPO models and logs are preserved.
