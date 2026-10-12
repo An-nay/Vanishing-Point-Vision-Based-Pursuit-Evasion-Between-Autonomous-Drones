@@ -17,3 +17,6 @@ Thumbs.db
 # Env
 .venv/
 venv/
+
+# Stage 2 training/evaluation outputs
+runs/

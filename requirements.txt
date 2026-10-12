@@ -5,3 +5,5 @@ stable-baselines3>=2.0
 tensorboard>=2.15
 matplotlib>=3.7
 pytest>=7.4
+pettingzoo>=1.24,<2
+torch>=2.0
