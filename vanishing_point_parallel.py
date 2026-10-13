@@ -25,7 +25,9 @@ class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
         self.possible_agents = list(AGENTS)
         self.agents = []
         self.sim = Simulator(**world_options)
-        self.observation_spaces = {a: spaces.Box(-1., 1., (21,), np.float32) for a in AGENTS}
+        obs_dim = 21 + self.sim.obs_extra  # +9 when obstacles are present
+        dims = {"seeker": obs_dim * self.sim.seeker_history, "evader": obs_dim}
+        self.observation_spaces = {a: spaces.Box(-1., 1., (dims[a],), np.float32) for a in AGENTS}
         self.action_spaces = {a: spaces.Box(-1., 1., (5 if a == "seeker" else 3,), np.float32)
                               for a in AGENTS}
         self.state_space = spaces.Box(-1., 1., (26,), np.float32)
@@ -52,7 +54,8 @@ class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
             for index, agent in enumerate(AGENTS):
                 self.action_space(agent).seed(seed + index)
         self.sim.reset_world(self.np_random, (options or {}).get("initial_state"))
-        self.seeker_policy = ScriptedSeekerPolicy(self.np_random, self.sim.initial_forward)
+        self.seeker_policy = ScriptedSeekerPolicy(self.np_random, self.sim.initial_forward,
+                                                 obstacles=self.sim.obstacles)
         self.seeker_mode = "LEARNED"
         self.agents = self.possible_agents.copy()
         if self.render_mode == "human":

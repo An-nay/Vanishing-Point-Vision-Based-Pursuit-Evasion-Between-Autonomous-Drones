@@ -1,0 +1,15 @@
+"""Load any Stage 2 checkpoint (MADDPG or MAPPO) behind one interface: act / obs_dims / action_dims / config."""
+from pathlib import Path
+import torch
+
+
+def load_policy(path, device="cpu"):
+    path = Path(path)
+    if path.suffix != ".pt" or not path.is_file():
+        raise FileNotFoundError(f"checkpoint not found: {path}")
+    algo = torch.load(path, map_location=device, weights_only=True).get("algo", "maddpg")
+    if algo == "mappo":
+        from mappo import MAPPO
+        return MAPPO.load(path, device)
+    from maddpg import MADDPG
+    return MADDPG.load(path, device)

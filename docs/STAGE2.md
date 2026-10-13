@@ -1,7 +1,7 @@
 # Stage 2: simultaneous learning with MADDPG
 
 Stage 1's PPO commands, saved PPO checkpoints, 21-value Evader observation,
-scripted Seeker and existing tests remain supported. Both RL interfaces now
+the Stage 1 scripted Seeker (Stage 1 only; no Stage 2 training or evaluation uses it) and existing tests remain supported. Both RL interfaces now
 advance the same NumPy simulator. The random-Evader prototype is retained
 unchanged for provenance.
 
@@ -9,7 +9,7 @@ unchanged for provenance.
 
 | File | Purpose |
 |---|---|
-| `vanishing_point_core.py` | Arena constants, original FOV geometry, velocity scaling, scripted Seeker, joint dynamics, memory and statistics |
+| `vanishing_point_core.py` | Arena constants, original FOV geometry, velocity scaling, joint dynamics, obstacles, (Stage 1) scripted Seeker, memory and statistics |
 | `vanishing_point_render.py` | Original arena/drone/debug rendering extracted into a lazy PyBullet mixin |
 | `vanishing_point_ppo.py` | Existing Gymnasium PPO wrapper, training, curriculum and evaluation CLI |
 | `vanishing_point_parallel.py` | PettingZoo Parallel API with `seeker` and `evader` |
@@ -17,11 +17,11 @@ unchanged for provenance.
 | `maddpg_config.json` | All Stage 2 network, optimization, exploration and environment configuration |
 | `stage2_opponents.py` | Frozen PPO, random and historical MADDPG opponents |
 | `train_maddpg.py` | Phases A, B and C, multi-seed runs and CSV logging |
-| `evaluate_stage2.py` | Phase D, four-way paired evaluation and historical opponents |
+| `evaluate_stage2.py` | Phase D, paired evaluation of learned policies (plus held-out Seekers), bootstrap CIs, unshaped rewards |
 | `plot_stage2.py` | Learning curves, visibility comparisons and 3D trajectories |
-| `test_stage2_environment.py` | Joint dynamics, FOV, camera, information restrictions, rewards and API tests |
-| `test_maddpg.py` | Learning, replay alignment, targets, frozen opponents, checkpoint and reproducibility tests |
-| `test_stage2_evaluation.py` | Paired starting conditions, saved PPO evaluation and censored-event aggregation |
+| `tests/test_stage2_environment.py` | Joint dynamics, FOV, camera, information restrictions, rewards and API tests |
+| `tests/test_maddpg.py` | Learning, replay alignment, targets, frozen opponents, checkpoint and reproducibility tests |
+| `tests/test_stage2_evaluation.py` | Paired starting conditions, saved PPO evaluation and censored-event aggregation |
 
 All Python modules remain flat so existing imports and commands work.
 
@@ -60,7 +60,8 @@ boundaries. Leaving and touching again incurs another penalty, matching
 Stage 1. Wall contacts and detection never terminate episodes. Both agents
 truncate together at the time limit; final observations are returned for replay.
 
-No extra reward shaping is enabled. Visibility components are opposite, but
+No extra reward shaping is enabled by default (the final recipe turns on a training-only per-step wall penalty, see the
+additions section at the end; evaluation is always unshaped). Visibility components are opposite, but
 wall penalties make the full rewards non-zero-sum.
 
 ### Simultaneous actions and camera updates
@@ -82,11 +83,9 @@ forward   = [cos(pitch)*cos(yaw), cos(pitch)*sin(yaw), sin(pitch)]
 Yaw is about the world's z axis; pitch is elevation above the xy plane.
 Movement does not automatically rotate a learned Seeker's camera.
 
-The original scripted baseline uses `step_scripted(evader_action)`. It keeps
-its original instantaneous TRACK/SEARCH turns and SCAN sweep. This adapter
-uses the same position dynamics, visibility and rewards; its camera behavior
-is intentionally preserved for Stage 1 comparisons. The learned camera's
-turn-rate restriction is a difference to account for when interpreting results.
+`step_scripted(evader_action)` is a Stage 1 compatibility adapter (the original
+rule-based Seeker). It is NOT used by any Stage 2 training or evaluation; it exists
+only so the Stage 1 PPO baseline can run on the shared simulator.
 
 ## World state versus actor observations
 
@@ -94,7 +93,7 @@ The simulator holds both true positions and velocities, camera yaw/pitch,
 visibility, last-detected target position, detection age, boundary-contact
 flags and episode time. Rendering and evaluation may read this complete world.
 
-Each actor accepts just its own 21-value observation. Actor inference
+Each actor accepts just its own observation (21 values; 30 with obstacles; the Seeker's is multiplied by `seeker_history`). Actor inference
 never accepts a global state, an opponent observation or an opponent action.
 
 ### Evader: the saved PPO-compatible layout
@@ -237,10 +236,13 @@ This evaluates:
 
 | Experiment | Seeker | Evader |
 |---|---|---|
-| Stage 1 baseline | Original scripted | PPO |
-| Learned Seeker test | Phase B MADDPG | Frozen PPO |
-| Stage 2 | Joint MADDPG | Joint MADDPG |
-| Cross-evaluation | Original scripted | Joint MADDPG |
+| `learned_seeker_ppo` | Phase B MADDPG (or the joint Seeker if no `--seeker-checkpoint`) | Frozen PPO |
+| `joint_seeker_ppo` (when a separate Phase B checkpoint is given) | Joint MADDPG | Frozen PPO |
+| `stage2_joint` | Joint MADDPG | Joint MADDPG |
+| `historical_seeker_i` (`--historical-seekers`) | a held-out learned Seeker | Joint MADDPG |
+| `stage1_reference` (only with `--stage1-reference`) | Original scripted (Stage 1) | PPO |
+
+Every Stage 2 matchup uses learned policies only; the scripted Seeker is a Stage 1 reference.
 
 If `--seeker-checkpoint` is omitted, the learned-Seeker/PPO test uses the
 joint checkpoint's Seeker and records that source in `evaluation.json`.
@@ -320,3 +322,26 @@ Implementation references:
 [the MADDPG paper](https://arxiv.org/abs/1706.02275).
 
 Executed checks and smoke-run artifacts are recorded in [STAGE2_VALIDATION.md](STAGE2_VALIDATION.md).
+
+
+## Additions since the original Stage 2 (see STAGE2_RESULTS.md)
+
+Opt-in config keys (all default to the original behaviour):
+
+| Key | Meaning |
+|---|---|
+| `environment.obstacles` | `"city"`, `"pillars"` or a list of `[[xmin,ymin,zmin],[xmax,ymax,zmax]]` boxes. Blocks line of sight, blocks motion (scored like a wall contact), appends 9 obstacle values (3 nearest obstacles) to each observation |
+| `environment.boundary_penalty_per_step` | Extra training-only penalty for every step spent in contact (original rule: first contact only). Evaluation always uses unshaped rewards |
+| `environment.seeker_history`, `seeker_history_stride` | Seeker observation = newest + (k-1) older observations, `stride` steps apart |
+| `action_reg` | L2 penalty on actor pre-tanh outputs (prevents saturated actions) |
+| `alternate_every`, `alternate_pattern` | Train one agent per block of N steps (pattern e.g. `["seeker","seeker","evader"]`) |
+| `mix_ppo_evader`, `mix_ppo_model`, `mix_frozen_seeker` | Per-episode opponent mixing: a frozen PPO Evader and/or a frozen learned Seeker (the `--initialize` checkpoint). A frozen policy's next action enters only the OTHER agent's critic target |
+
+Other changes: training episode seeds no longer overlap across training seeds; `evaluate_stage2.py` defaults to 20 episodes per seed group,
+always scores unshaped rewards, reports bootstrap CIs and paired differences, and fixes `seed_count`.
+`vanishing_point_view2d.py` renders GIF/PNG replays without PyBullet.
+
+| `mix_pool_seeker`, `mix_pool_evader`, `pool_every`, `pool_size` | Opponent pool: per-episode probability of playing a sampled past snapshot of the Seeker / Evader; snapshot interval (steps) and number kept |
+
+MAPPO is a separate comparison implementation (`mappo.py`, `train_mappo.py`); `policy_io.load_policy` loads either checkpoint type, and
+`evaluate_stage2.py`, `crossplay_stage2.py` and the viewers accept both. Results: [COMPARISONS.md](COMPARISONS.md).

@@ -35,14 +35,14 @@ class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
 
     metadata = {"render_modes": ["human"], "render_fps": int(1 / DT)}
 
-    def __init__(self, render_mode=None, randomize_start=True):
+    def __init__(self, render_mode=None, randomize_start=True, obstacles=None):
         gym.Env.__init__(self)
-        Simulator.__init__(self, randomize_start=randomize_start)
+        Simulator.__init__(self, randomize_start=randomize_start, obstacles=obstacles)
         if render_mode not in (None, "human"):
             raise ValueError("render_mode must be None or 'human'")
         self.render_mode = render_mode
         self.action_space = spaces.Box(-1.0, 1.0, shape=(3,), dtype=np.float32)
-        self.obs_dim = 21 + int(INCLUDE_VISIBILITY_IN_OBS)
+        self.obs_dim = 21 + int(INCLUDE_VISIBILITY_IN_OBS) + self.obs_extra
         self.observation_space = spaces.Box(-1.0, 1.0, shape=(self.obs_dim,), dtype=np.float32)
         self.physics_client = self.seeker_id = self.evader_id = None
         self.seeker_policy = None
@@ -77,13 +77,16 @@ class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
         )
 
     def _check_visibility(self):
-        return is_visible(
+        visible, distance, angle = is_visible(
             self.seeker_pos,
             self.seeker_policy.forward,
             self.evader_pos,
             self.fov_deg,
             self.detection_range,
         )
+        if visible and segment_blocked(self.seeker_pos, self.evader_pos, self.obstacles):
+            visible = False  # obstacles block the line of sight
+        return visible, distance, angle
 
 
     def close(self):
@@ -97,7 +100,8 @@ class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
         gym.Env.reset(self, seed=seed)
         self.reset_world(self.np_random, (options or {}).get("initial_state"))
         self.seeker_policy = ScriptedSeekerPolicy(
-            self.np_random, self.initial_forward, speed=self.seeker_speed)
+            self.np_random, self.initial_forward, speed=self.seeker_speed,
+            obstacles=self.obstacles)
         if self.render_mode == "human":
             self._reset_render_objects()
             self._render_step(self.visible, self.distance, self.angle, reward=0.0)
@@ -156,6 +160,7 @@ def train_ppo(
     tensorboard_log=None,
     curriculum=False,
     stages=4,
+    obstacles=None,
 ):
     print("\n=== PPO TRAINING ===")
     print(f"Seed: {seed}")
@@ -166,7 +171,7 @@ def train_ppo(
     else:
         print("Curriculum: OFF (full difficulty throughout)")
 
-    raw_env = VanishingPointEnv(render_mode=None, randomize_start=True)
+    raw_env = VanishingPointEnv(render_mode=None, randomize_start=True, obstacles=obstacles)
     check_env(raw_env, warn=True)
     env = Monitor(raw_env)
 
@@ -265,10 +270,11 @@ def print_summary(summaries):
     print(f"6. Mean seeker search restarts: {searches.mean():.2f}")
 
 
-def evaluate_policy(title, action_fn_factory, episodes, seed, render, overrides):
+def evaluate_policy(title, action_fn_factory, episodes, seed, render, overrides, obstacles=None):
     env = VanishingPointEnv(
         render_mode="human" if render else None,
         randomize_start=True,
+        obstacles=obstacles,
     )
     env.set_params(**overrides)
 
@@ -287,24 +293,24 @@ def evaluate_policy(title, action_fn_factory, episodes, seed, render, overrides)
     print_summary(summaries)
 
 
-def evaluate_ppo(model_path, episodes, seed, render, overrides):
+def evaluate_ppo(model_path, episodes, seed, render, overrides, obstacles=None):
     print(f"Model: {model_path}")
     model = PPO.load(model_path)
 
     def factory(env):
         return lambda obs: model.predict(obs, deterministic=True)[0]
 
-    evaluate_policy("PPO EVALUATION", factory, episodes, seed, render, overrides)
+    evaluate_policy("PPO EVALUATION", factory, episodes, seed, render, overrides, obstacles)
 
 
-def evaluate_random(episodes, seed, render, overrides):
+def evaluate_random(episodes, seed, render, overrides, obstacles=None):
     """Baseline using random actions from the same PPO action space."""
 
     def factory(env):
         env.action_space.seed(seed)
         return lambda obs: env.action_space.sample()
 
-    evaluate_policy("RANDOM BASELINE", factory, episodes, seed, render, overrides)
+    evaluate_policy("RANDOM BASELINE", factory, episodes, seed, render, overrides, obstacles)
 
 
 def add_difficulty_args(parser):
@@ -314,6 +320,9 @@ def add_difficulty_args(parser):
                         help="Override camera field of view in degrees (default 90)")
     parser.add_argument("--range", dest="detection_range", type=float, default=None,
                         help="Override detection range in metres (default 10)")
+    parser.add_argument("--obstacles", default=None, choices=sorted(OBSTACLE_PRESETS),
+                        help="Obstacle preset (default: none). Changes the observation size, so "
+                             "a model must be trained and evaluated with the same preset")
 
 
 def overrides_from_args(args):
@@ -342,6 +351,8 @@ def parse_args():
         "--curriculum", action="store_true",
         help="Train from an easy Seeker up to full difficulty",
     )
+    train_parser.add_argument("--obstacles", default=None, choices=sorted(OBSTACLE_PRESETS),
+                              help="Train inside an obstacle preset (default: none)")
     train_parser.add_argument(
         "--stages", type=int, default=4,
         help="Number of curriculum stages (used with --curriculum)",
@@ -380,6 +391,7 @@ def main():
             tensorboard_log=args.tensorboard_log,
             curriculum=args.curriculum,
             stages=args.stages,
+            obstacles=args.obstacles,
         )
 
     elif args.command == "eval":
@@ -389,6 +401,7 @@ def main():
             seed=args.seed,
             render=args.render,
             overrides=overrides_from_args(args),
+            obstacles=args.obstacles,
         )
 
     elif args.command == "random":
@@ -397,6 +410,7 @@ def main():
             seed=args.seed,
             render=args.render,
             overrides=overrides_from_args(args),
+            obstacles=args.obstacles,
         )
 
 

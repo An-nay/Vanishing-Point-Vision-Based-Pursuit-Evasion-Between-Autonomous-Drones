@@ -1,0 +1,39 @@
+{
+  "hidden_sizes": [
+    128,
+    128
+  ],
+  "actor_lr": 0.0003,
+  "critic_lr": 0.001,
+  "batch_size": 128,
+  "replay_capacity": 100000,
+  "gamma": 0.99,
+  "tau": 0.01,
+  "gradient_clip": 10,
+  "warmup_steps": 2000,
+  "learn_every": 10,
+  "updates_per_step": 1,
+  "noise_start": 0.3,
+  "noise_end": 0.05,
+  "noise_decay_steps": 450000,
+  "checkpoint_every": 100000,
+  "torch_threads": 1,
+  "total_steps": 600000,
+  "seed": 2001,
+  "environment": {
+    "episode_steps": 600,
+    "randomize_start": true,
+    "yaw_rate_deg": 100,
+    "pitch_rate_deg": 90,
+    "pitch_limit_deg": 89,
+    "boundary_penalty_per_step": 2.0,
+    "obstacles": "city",
+    "seeker_history": 4,
+    "seeker_history_stride": 5
+  },
+  "action_reg": 0.05,
+  "alternate_every": 20000,
+  "mix_ppo_evader": 0.5,
+  "mix_ppo_model": "models/ppo_city_plain_s2001.zip",
+  "mix_frozen_seeker": 0.25
+}

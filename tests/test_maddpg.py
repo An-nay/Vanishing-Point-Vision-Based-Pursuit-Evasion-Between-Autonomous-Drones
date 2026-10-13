@@ -1,5 +1,6 @@
 """Learning, replay, checkpoint and frozen-opponent integration tests."""
 import copy
+from pathlib import Path
 import numpy as np
 import pytest
 import torch
@@ -159,3 +160,116 @@ def test_training_reproducible_on_cpu(tmp_path):
     for agent in AGENTS:
         for key, weights in first.actors[agent].state_dict().items():
             torch.testing.assert_close(weights, second.actors[agent].state_dict()[key], rtol=0, atol=0)
+
+
+def test_mixed_opponent_training_uses_a_frozen_learned_seeker(tmp_path):
+    import csv
+    config = small_config()
+    config.update(total_steps=160, mix_frozen_seeker=0.5)
+    warm = tmp_path / "warm.pt"
+    learner, _ = setup_batch(config)
+    learner.save(warm)
+    train(config, "simultaneous", tmp_path / "mix", initialize=warm)
+    with (tmp_path / "mix" / "episodes.csv").open() as stream:
+        modes = {row["mode"] for row in csv.DictReader(stream)}
+    assert modes == {"selfplay", "frozen_seeker"}
+    with pytest.raises(ValueError, match="initialize"):
+        train(config, "simultaneous", tmp_path / "nomix")
+
+
+def test_mix_config_validation():
+    config = small_config()
+    config.update(mix_frozen_seeker=0.7, mix_ppo_evader=0.5, mix_ppo_model="x")
+    import json, tempfile, os
+    path = os.path.join(tempfile.mkdtemp(), "c.json")
+    Path(path).write_text(json.dumps(config))
+    with pytest.raises(ValueError):
+        load_config(path)
+    config.update(mix_frozen_seeker=0.2, mix_ppo_evader=0.2)
+    config.pop("mix_ppo_model")
+    Path(path).write_text(json.dumps(config))
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_flagged_frozen_next_actions_only_replace_flagged_rows():
+    config = small_config()
+    learner, replay = setup_batch(config)
+    seen = []
+
+    def frozen(next_obs):
+        seen.append(len(next_obs))
+        return np.zeros((len(next_obs), 3), np.float32)
+
+    replay.frozen[:] = 0.0
+    learner.update(replay, ("seeker",), {"evader": frozen}, flagged_only=True)
+    assert seen == []                      # nothing flagged -> frozen policy never queried
+    replay.frozen[:5, 1] = 1.0  # column 1 = the Evader
+    learner.update(replay, ("seeker",), {"evader": frozen}, flagged_only=True)
+    assert seen and all(n <= config["batch_size"] for n in seen)
+
+
+def test_frozen_next_action_enters_other_critics_but_never_the_frozen_agents_own_critic():
+    config = small_config()
+    learner, replay = setup_batch(config)
+    replay.frozen[:, 1] = 1.0
+    seen = {}
+    for agent in AGENTS:
+        learner.target_critics[agent].register_forward_hook(
+            lambda module, inputs, output, name=agent: seen.__setitem__(name, inputs[1].detach().clone()))
+    constant = lambda next_obs: np.full((len(next_obs), 3), 0.123, np.float32)
+    learner.update(replay, AGENTS, {"evader": constant}, flagged_only=True)
+    evader_slice = slice(5, 8)  # joint action layout: seeker(5) then evader(3)
+    assert torch.allclose(seen["seeker"][:, evader_slice], torch.full((config["batch_size"], 3), 0.123))
+    assert not torch.allclose(seen["evader"][:, evader_slice], torch.full((config["batch_size"], 3), 0.123))
+
+
+def test_frozen_seeker_action_enters_the_evaders_critic_but_never_the_seekers_own():
+    config = small_config()
+    learner, replay = setup_batch(config)
+    replay.frozen[:, 0] = 1.0  # column 0 = the Seeker
+    seen = {}
+    for agent in AGENTS:
+        learner.target_critics[agent].register_forward_hook(
+            lambda module, inputs, output, name=agent: seen.__setitem__(name, inputs[1].detach().clone()))
+    constant = lambda next_obs: np.full((len(next_obs), 5), 0.321, np.float32)
+    learner.update(replay, AGENTS, {"seeker": constant}, flagged_only=True)
+    ones = torch.full((config["batch_size"], 5), 0.321)
+    assert torch.allclose(seen["evader"][:, :5], ones)
+    assert not torch.allclose(seen["seeker"][:, :5], ones)
+
+
+def test_opponent_provider_uses_each_rows_own_snapshot_and_flags_evicted_rows():
+    from maddpg import Actor
+    from stage2_opponents import OpponentProvider
+    torch.manual_seed(0)
+    build = lambda: Actor(21, 3, [8, 8])
+    provider = OpponentProvider("evader", 3, fixed=None, capacity=2, build_actor=build)
+    nets = [build() for _ in range(3)]
+    ids = [provider.add_snapshot(net.state_dict()) for net in nets]  # capacity 2 evicts the first
+    obs = np.random.default_rng(0).normal(size=(4, 21)).astype(np.float32)
+    out = provider.batch(obs, np.array([ids[1], ids[2], ids[1], ids[0]]))
+    expected = [np.clip(nets[1](torch.as_tensor(obs[0])).detach().numpy(), -1, 1),
+                np.clip(nets[2](torch.as_tensor(obs[1])).detach().numpy(), -1, 1)]
+    assert np.allclose(out[0], expected[0], atol=1e-6) and np.allclose(out[1], expected[1], atol=1e-6)
+    assert np.all(np.isnan(out[3]))                     # evicted snapshot -> caller must fall back
+    assert provider.snapshot_ids() == ids[1:]
+
+
+def test_pool_training_samples_past_snapshots_and_stays_finite(tmp_path):
+    import csv
+    config = small_config()
+    config.update(total_steps=240, mix_pool_seeker=0.4, mix_pool_evader=0.4, pool_every=40, pool_size=3,
+                  warmup_steps=8)
+    train(config, "simultaneous", tmp_path / "pool")
+    with (tmp_path / "pool" / "episodes.csv").open() as stream:
+        modes = {row["mode"] for row in csv.DictReader(stream)}
+    assert {"pool_seeker", "pool_evader"} <= modes
+    with (tmp_path / "pool" / "updates.csv").open() as stream:
+        assert all(np.isfinite(float(r["evader_critic_loss"] or 0)) for r in csv.DictReader(stream))
+    bad = dict(config, mix_pool_seeker=0.7, mix_pool_evader=0.5)
+    import json, os, tempfile
+    path = os.path.join(tempfile.mkdtemp(), "c.json")
+    Path(path).write_text(json.dumps(bad))
+    with pytest.raises(ValueError):
+        load_config(path)
