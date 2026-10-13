@@ -1,0 +1,33 @@
+{
+  "hidden_sizes": [
+    128,
+    128
+  ],
+  "actor_lr": 0.0003,
+  "critic_lr": 0.001,
+  "rollout_steps": 4096,
+  "epochs": 10,
+  "minibatch": 256,
+  "gamma": 0.99,
+  "gae_lambda": 0.95,
+  "clip_range": 0.2,
+  "ent_coef": 0.01,
+  "max_grad_norm": 0.5,
+  "init_log_std": -0.5,
+  "reward_scale": 0.1,
+  "total_steps": 400000,
+  "seed": 2001,
+  "torch_threads": 1,
+  "checkpoint_every": 100000,
+  "environment": {
+    "episode_steps": 600,
+    "randomize_start": true,
+    "yaw_rate_deg": 100,
+    "pitch_rate_deg": 90,
+    "pitch_limit_deg": 89,
+    "boundary_penalty_per_step": 2.0,
+    "obstacles": "city",
+    "seeker_history": 4,
+    "seeker_history_stride": 5
+  }
+}

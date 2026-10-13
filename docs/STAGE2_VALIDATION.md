@@ -1,3 +1,8 @@
+> **Historical record.** This is the original Stage 2 validation (Windows, 5 October 2026, 43 tests, four-way evaluation with a scripted
+> Seeker). It is superseded by the current suite (`pytest -q`, 74 tests), the scripted-free evaluation and the multi-seed results in
+> [STAGE2_RESULTS.md](STAGE2_RESULTS.md) and [COMPARISONS.md](COMPARISONS.md). Its statement that multi-seed and long-run experiments
+> "remain experiments for the user" is no longer true.
+
 # Executed Stage 2 validation
 
 Validated on 5 October 2026 using the existing Windows project environment:

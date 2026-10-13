@@ -17,7 +17,9 @@ def load_config(path=DEFAULT_CONFIG):
                 "gamma", "tau", "gradient_clip", "warmup_steps", "learn_every",
                 "updates_per_step", "noise_start", "noise_end", "noise_decay_steps",
                 "checkpoint_every", "torch_threads", "total_steps", "seed", "environment"}
-    if set(config) != required:
+    optional = {"action_reg", "alternate_every", "alternate_pattern", "mix_ppo_evader", "mix_ppo_model", "mix_frozen_seeker",
+                                                  "mix_pool_seeker", "mix_pool_evader", "pool_every", "pool_size"}  # action_reg: pre-tanh L2 coefficient; alternate_every: steps per single-learner block (0 = both learn)
+    if not required <= set(config) <= required | optional:
         raise ValueError(f"config keys differ: missing={required - set(config)}, extra={set(config) - required}")
     positive_ints = ["batch_size", "replay_capacity", "learn_every", "updates_per_step",
                      "noise_decay_steps", "checkpoint_every", "torch_threads", "total_steps"]
@@ -39,9 +41,29 @@ def load_config(path=DEFAULT_CONFIG):
     if not (np.isfinite(config["noise_start"]) and np.isfinite(config["noise_end"])
             and 0 <= config["noise_end"] <= config["noise_start"]):
         raise ValueError("noise requires 0 <= noise_end <= noise_start")
+    reg = config.get("action_reg", 0.0)
+    if not isinstance(reg, (int, float)) or isinstance(reg, bool) or not np.isfinite(reg) or reg < 0:
+        raise ValueError("action_reg must be a finite non-negative number")
+    block = config.get("alternate_every", 0)
+    if type(block) is not int or block < 0:
+        raise ValueError("alternate_every must be a non-negative integer")
+    for key in ("mix_ppo_evader", "mix_frozen_seeker", "mix_pool_seeker", "mix_pool_evader"):
+        value = config.get(key, 0.0)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
+            raise ValueError(f"{key} must be a probability in [0, 1]")
+    for key in ("pool_every", "pool_size"):
+        if key in config and (type(config[key]) is not int or config[key] <= 0):
+            raise ValueError(f"{key} must be a positive integer")
+    if sum(config.get(k, 0.0) for k in ("mix_ppo_evader", "mix_frozen_seeker", "mix_pool_seeker", "mix_pool_evader")) > 1:
+        raise ValueError("mix probabilities cannot sum above 1")
+    if config.get("mix_ppo_evader", 0.0) > 0 and not config.get("mix_ppo_model"):
+        raise ValueError("mix_ppo_evader requires mix_ppo_model")
+    pattern = config.get("alternate_pattern")
+    if pattern is not None and (not isinstance(pattern, list) or not pattern or any(a not in AGENTS for a in pattern)):
+        raise ValueError("alternate_pattern must be a non-empty list of agent names")
     env = config["environment"]
     env_keys = {"episode_steps", "randomize_start", "yaw_rate_deg", "pitch_rate_deg", "pitch_limit_deg"}
-    if not isinstance(env, dict) or set(env) != env_keys:
+    if not isinstance(env, dict) or not env_keys <= set(env) <= env_keys | {"boundary_penalty_per_step", "obstacles", "seeker_history", "seeker_history_stride"}:
         raise ValueError(f"environment must contain exactly {sorted(env_keys)}")
     if type(env["episode_steps"]) is not int or env["episode_steps"] <= 0:
         raise ValueError("environment episode_steps must be a positive integer")
@@ -100,6 +122,9 @@ class ReplayBuffer:
         self.rewards = np.empty((capacity, 2), np.float32)
         self.terminated = np.empty((capacity, 2), np.float32)
         self.truncated = np.empty((capacity, 2), np.float32)
+        # columns follow AGENTS: 1 = that agent's action came from a frozen opponent policy
+        self.frozen = np.zeros((capacity, 2), np.float32)
+        self.frozen_id = np.zeros((capacity, 2), np.int64)  # which frozen policy (0 = the fixed one, k>=1 = pool snapshot k)
 
     def __len__(self):
         return self.size
@@ -112,7 +137,7 @@ class ReplayBuffer:
         return value
 
     def add(self, observations, actions, rewards, next_observations, state, next_state,
-            terminated, truncated):
+            terminated, truncated, frozen=(0.0, 0.0), frozen_id=(0, 0)):
         groups = [observations, actions, rewards, next_observations, terminated, truncated]
         if any(set(group) != set(AGENTS) for group in groups):
             raise ValueError("replay transitions must contain both agents")
@@ -134,6 +159,8 @@ class ReplayBuffer:
             self.actions[a][i] = act[a]
         self.states[i], self.next_states[i] = state, next_state
         self.rewards[i], self.terminated[i], self.truncated[i] = reward, term, trunc
+        self.frozen[i] = self._check(frozen, (2,), "frozen flags")
+        self.frozen_id[i] = np.asarray(frozen_id, dtype=np.int64)
         self.position = (i + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
@@ -148,7 +175,7 @@ class ReplayBuffer:
             "actions": {a: tensor(self.actions[a]) for a in AGENTS},
             "state": tensor(self.states), "next_state": tensor(self.next_states),
             "rewards": tensor(self.rewards), "terminated": tensor(self.terminated),
-            "truncated": tensor(self.truncated),
+            "truncated": tensor(self.truncated), "frozen": tensor(self.frozen), "frozen_id": torch.as_tensor(self.frozen_id[indices], device=device),
         }
 
 
@@ -201,31 +228,56 @@ class MADDPG:
         for target_param, source_param in zip(target.parameters(), source.parameters()):
             target_param.lerp_(source_param, self.config["tau"])
 
-    def update(self, replay, active_agents=AGENTS, frozen_next_actions=None):
+    def update(self, replay, active_agents=AGENTS, frozen_next_actions=None, flagged_only=False):
         if not active_agents or any(a not in AGENTS for a in active_agents):
             raise ValueError("active_agents must name at least one valid learner")
         batch = replay.sample(self.config["batch_size"], self.device)
         with torch.no_grad():
             next_actions = {}
+            override = {}
             for agent in AGENTS:
-                if frozen_next_actions and agent in frozen_next_actions:
+                # Own target policy by default (also what the agent's OWN critic must always use).
+                next_actions[agent] = self.target_actors[agent](batch["next_observations"][agent])
+                if not (frozen_next_actions and agent in frozen_next_actions):
+                    continue
+                if flagged_only:
+                    # Mixed training: only transitions played against the frozen policy use its next action.
+                    rows = batch["frozen"][:, AGENTS.index(agent)] > 0.5
+                    if not rows.any():
+                        continue
+                    next_obs = batch["next_observations"][agent][rows].cpu().numpy()
+                    provider = frozen_next_actions[agent]
+                    if getattr(provider, "uses_ids", False):  # a pool: each row may come from a different snapshot
+                        ids = batch["frozen_id"][rows, AGENTS.index(agent)].cpu().numpy()
+                        prediction = np.asarray(provider.batch(next_obs, ids), dtype=np.float32)
+                    else:
+                        prediction = np.asarray(frozen_next_actions[agent](next_obs), dtype=np.float32)
+                    if prediction.shape != (int(rows.sum()), self.action_dims[agent]):
+                        raise ValueError(agent + " frozen next actions have the wrong shape")
+                    replaced = next_actions[agent].clone()
+                    known = torch.as_tensor(np.all(np.isfinite(prediction), axis=1), device=self.device)
+                    target_rows = torch.nonzero(rows).squeeze(-1)[known]  # rows whose snapshot was evicted keep the learned target
+                    replaced[target_rows] = torch.as_tensor(prediction[known.cpu().numpy()], device=self.device)
+                else:
                     next_obs = batch["next_observations"][agent].cpu().numpy()
-                    prediction = frozen_next_actions[agent](next_obs)
                     prediction = ReplayBuffer._check(
-                        prediction, (self.config["batch_size"], self.action_dims[agent]),
-                        agent + " frozen next actions")
+                        frozen_next_actions[agent](next_obs),
+                        (self.config["batch_size"], self.action_dims[agent]), agent + " frozen next actions")
                     if np.any(np.abs(prediction) > 1):
                         raise ValueError("frozen opponent actions must be normalized")
-                    next_actions[agent] = torch.as_tensor(prediction, device=self.device)
-                else:
-                    next_actions[agent] = self.target_actors[agent](batch["next_observations"][agent])
-            joint_next = torch.cat([next_actions[a] for a in AGENTS], dim=-1)
+                    replaced = torch.as_tensor(prediction, device=self.device)
+                override[agent] = replaced
+
+            def joint_next_for(learner):
+                # A frozen policy's action replaces the learned target action only in OTHER agents' critics.
+                return torch.cat([override[a] if a in override and a != learner else next_actions[a]
+                                  for a in AGENTS], dim=-1)
         joint_replay = torch.cat([batch["actions"][a] for a in AGENTS], dim=-1)
         metrics = {}
         for agent in active_agents:
             index = AGENTS.index(agent)
             with torch.no_grad():
-                next_q = self.target_critics[agent](batch["next_state"], joint_next)
+                next_q = self.target_critics[agent](batch["next_state"], joint_next_for(agent))
                 target = bellman_target(batch["rewards"][:, index:index+1],
                                         batch["terminated"][:, index:index+1],
                                         next_q, self.config["gamma"])
@@ -241,11 +293,14 @@ class MADDPG:
 
             # Other agents' sampled replay actions are constants for this gradient.
             actor_actions = {a: batch["actions"][a].detach() for a in AGENTS}
-            actor_actions[agent] = self.actors[agent](batch["observations"][agent])
+            pre_tanh = self.actors[agent].net[:-1](batch["observations"][agent])
+            actor_actions[agent] = torch.tanh(pre_tanh)
             self.critics[agent].requires_grad_(False)
             try:
-                actor_loss = -self.critics[agent](
-                    batch["state"], torch.cat([actor_actions[a] for a in AGENTS], dim=-1)).mean()
+                q_value = self.critics[agent](
+                    batch["state"], torch.cat([actor_actions[a] for a in AGENTS], dim=-1))
+                actor_loss = -q_value.mean()
+                actor_loss = actor_loss + self.config.get("action_reg", 0.0) * (pre_tanh ** 2).mean()
                 if not torch.isfinite(actor_loss):
                     raise FloatingPointError(f"{agent} actor loss is non-finite")
                 self.actor_optimizers[agent].zero_grad(set_to_none=True)
