@@ -32,7 +32,7 @@ class PPOEvader:
 
 class CheckpointOpponent:
     def __init__(self, path, agent):
-        from policy_io import load_policy
+        from vp.policy_io import load_policy
         self.learner = load_policy(path)  # MADDPG or MAPPO checkpoint
         self.agent = agent
 

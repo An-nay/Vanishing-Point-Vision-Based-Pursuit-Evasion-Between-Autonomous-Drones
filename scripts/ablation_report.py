@@ -1,6 +1,6 @@
 """Aggregate evaluate_stage2 outputs of several variants x seeds into one comparison table.
 
-    python ablation_report.py --prefix runs/ev_ A0_final A2_nowall ...   # reads runs/ev_<variant>_s<seed>/episodes.csv
+    python -m scripts.ablation_report --prefix runs/ev_ A0_final A2_nowall ...   # reads runs/ev_<variant>_s<seed>/episodes.csv
 
 Columns (each = mean over seeds, with the standard deviation ACROSS seeds, so seed-to-seed stability is visible):
   Seeker vs PPO       Evader visible %, joint-trained Seeker vs the held-out PPO Evader (higher = stronger Seeker)
@@ -13,6 +13,7 @@ import csv
 import glob
 from pathlib import Path
 import numpy as np
+from vp.paths import RUNS
 
 
 def per_seed(prefix, variant):
@@ -41,7 +42,7 @@ def per_seed(prefix, variant):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--prefix", default="runs/ev_")
+    parser.add_argument("--prefix", default=str(RUNS) + "/ev_")
     parser.add_argument("variants", nargs="+")
     args = parser.parse_args()
     cell = lambda values: f"{np.mean(values):.1f} +/- {np.std(values):.1f}"

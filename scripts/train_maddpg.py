@@ -4,10 +4,11 @@ import csv
 import json
 from pathlib import Path
 import numpy as np
-from vanishing_point_parallel import VanishingPointParallelEnv, AGENTS
-from vanishing_point_core import OBSTACLE_PRESETS
-from maddpg import MADDPG, ReplayBuffer, load_config, DEFAULT_CONFIG
-from stage2_opponents import make_evader, CheckpointOpponent, OpponentProvider
+from vp.parallel import VanishingPointParallelEnv, AGENTS
+from vp.core import OBSTACLE_PRESETS
+from vp.maddpg import MADDPG, ReplayBuffer, load_config, DEFAULT_CONFIG
+from vp.opponents import make_evader, CheckpointOpponent, OpponentProvider
+from vp.paths import RUNS
 
 EPISODE_FIELDS = [
     "episode", "step", "partial", "noise_std", "steps", "seeker_reward", "evader_reward",
@@ -111,7 +112,7 @@ def train(config, phase, output, opponent_kind="random", opponent_model=None,
         if not initialize:
             raise ValueError("mix_frozen_seeker needs --initialize: the pretrained Seeker is the frozen opponent")
         seeker_opponent = CheckpointOpponent(initialize, "seeker")
-    from maddpg import Actor
+    from vp.maddpg import Actor
     pool_on = phase == "simultaneous" and (config.get("mix_pool_seeker", 0.0) > 0 or config.get("mix_pool_evader", 0.0) > 0)
     providers = {a: OpponentProvider(a, action_dims[a], fixed=fixed, capacity=config.get("pool_size", 20),
                                      build_actor=lambda a=a: Actor(obs_dims[a], action_dims[a], config["hidden_sizes"]))
@@ -216,7 +217,7 @@ def main():
     parser.add_argument("--total-steps", type=int, help="Override config total_steps")
     parser.add_argument("--seeds", type=int, nargs="+", help="Train one run per seed")
     parser.add_argument("--episodes", type=int, default=2, help="Random validation episodes")
-    parser.add_argument("--output", type=Path, default=Path("runs/stage2"))
+    parser.add_argument("--output", type=Path, default=RUNS / "stage2")
     parser.add_argument("--opponent", choices=["random", "ppo", "maddpg"], default="random")
     parser.add_argument("--opponent-model", type=Path)
     parser.add_argument("--initialize", type=Path, help="Warm-start compatible MADDPG networks; fresh replay/optimizers")

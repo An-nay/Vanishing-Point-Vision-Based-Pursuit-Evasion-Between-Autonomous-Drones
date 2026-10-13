@@ -2,9 +2,9 @@
 import numpy as np
 import pytest
 from pettingzoo.test import parallel_api_test
-from vanishing_point_core import (Simulator, make_obstacles, segment_blocked, point_in_boxes,
+from vp.core import (Simulator, make_obstacles, segment_blocked, point_in_boxes,
                                   resolve_motion, sample_initial_state, DRONE_RADIUS)
-from vanishing_point_parallel import VanishingPointParallelEnv
+from vp.parallel import VanishingPointParallelEnv
 
 WALL = [[[9.0, 3.0, 0.0], [11.0, 12.0, 6.0]]]  # the 'city' central wall
 

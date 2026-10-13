@@ -1,18 +1,16 @@
 """
-Independent tests for vanishing_point_ppo.py.
+Independent tests for vp/ppo.py.
 
-Run from the same folder as vanishing_point_ppo.py, with the 'vp'
-conda environment active:
+Run from the project root with the project's virtual environment active:
 
-    $PY -m pip install pytest
-    $PY -m pytest test_vanishing_point.py -v
+    python -m pytest tests/test_vanishing_point.py -v
 """
 
 import math
 import numpy as np
 import pytest
 
-import vanishing_point_ppo as vp
+from vp import ppo as vp
 
 
 # ---------------------------------------------------------------------

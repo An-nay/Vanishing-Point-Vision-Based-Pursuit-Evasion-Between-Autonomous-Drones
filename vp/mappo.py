@@ -11,10 +11,11 @@ import numpy as np
 import torch
 from torch import nn
 from torch.distributions import Normal
-from vanishing_point_parallel import AGENTS
-from maddpg import mlp
+from vp.parallel import AGENTS
+from vp.maddpg import mlp
+from vp.paths import CONFIGS
 
-DEFAULT_MAPPO_CONFIG = Path(__file__).with_name("mappo_config.json")
+DEFAULT_MAPPO_CONFIG = CONFIGS / "mappo_config.json"
 REQUIRED = {"hidden_sizes", "actor_lr", "critic_lr", "rollout_steps", "epochs", "minibatch",
             "gamma", "gae_lambda", "clip_range", "ent_coef", "max_grad_norm", "init_log_std",
             "reward_scale", "total_steps", "seed", "torch_threads", "checkpoint_every", "environment"}

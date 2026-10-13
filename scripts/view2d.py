@@ -1,6 +1,6 @@
 """Polished 2D viewer: top-down map + side elevation + stats sidebar -> GIF / PNG.
 
-    python vanishing_point_view2d.py --obstacles city --matchup joint \
+    python -m scripts.view2d --obstacles city --matchup joint \
         --joint-checkpoint runs/fixed_long_s2004/simultaneous_s2004/final.pt --out runs/joint.gif
 
 Needs no PyBullet. Stage 2 matchups (all learned): joint, seeker_ppo.
@@ -14,8 +14,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, Polygon, Circle, Rectangle
-from vanishing_point_core import (ARENA_X, ARENA_Y, ARENA_Z, DT, segment_blocked)
-from vanishing_point_parallel import VanishingPointParallelEnv
+from vp.core import (ARENA_X, ARENA_Y, ARENA_Z, DT, segment_blocked)
+from vp.parallel import VanishingPointParallelEnv
+from vp.paths import MODELS, RUNS
 
 BG, PANEL, FLOOR, GRID = "#12161c", "#1a1f27", "#222a33", "#2b343f"
 TEXT, DIM = "#e8ecf1", "#8b95a5"
@@ -166,8 +167,8 @@ def draw_frame(fig, env, state):
 
 
 def build_policies(matchup, joint_path, seeker_path, ppo_path, seed):
-    from policy_io import load_policy
-    from stage2_opponents import PPOEvader, RandomEvader
+    from vp.policy_io import load_policy
+    from vp.opponents import PPOEvader, RandomEvader
     joint = load_policy(joint_path) if joint_path else None
     if matchup in ("scripted_joint", "joint") and joint is None:
         raise SystemExit("--joint-checkpoint is required for this matchup")
@@ -192,16 +193,16 @@ def main():
     parser.add_argument("--obstacles", default="city")
     parser.add_argument("--joint-checkpoint", type=Path)
     parser.add_argument("--seeker-checkpoint", type=Path)
-    parser.add_argument("--ppo-model", type=Path, default=Path("models/ppo_500k.zip"))
+    parser.add_argument("--ppo-model", type=Path, default=MODELS / "ppo_500k.zip")
     parser.add_argument("--seed", type=int, default=10001)
     parser.add_argument("--steps", type=int, default=600)
     parser.add_argument("--stride", type=int, default=2, help="render every Nth step")
-    parser.add_argument("--out", type=Path, default=Path("runs/demo.gif"))
+    parser.add_argument("--out", type=Path, default=RUNS / "demo.gif")
     args = parser.parse_args()
 
     options = {"obstacles": None if args.obstacles == "none" else args.obstacles}
     if args.joint_checkpoint:
-        from policy_io import load_policy
+        from vp.policy_io import load_policy
         options = {**load_policy(args.joint_checkpoint).config["environment"], **options}
     env = VanishingPointParallelEnv(**options)
     seeker, evader, subtitle = build_policies(args.matchup, args.joint_checkpoint, args.seeker_checkpoint,

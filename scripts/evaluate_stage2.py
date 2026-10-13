@@ -4,11 +4,12 @@ import csv
 import json
 from pathlib import Path
 import numpy as np
-from vanishing_point_core import sample_initial_state
-from vanishing_point_parallel import VanishingPointParallelEnv, AGENTS
-from maddpg import load_config
-from policy_io import load_policy
-from stage2_opponents import PPOEvader, CheckpointOpponent
+from vp.core import sample_initial_state
+from vp.parallel import VanishingPointParallelEnv, AGENTS
+from vp.maddpg import load_config
+from vp.policy_io import load_policy
+from vp.opponents import PPOEvader, CheckpointOpponent
+from vp.paths import MODELS, RUNS
 
 SCALAR_METRICS = [
     "seeker_reward", "evader_reward", "undetected_pct", "visible_pct",
@@ -229,7 +230,7 @@ def evaluate(ppo_path, joint_path, seeker_path, seeds, episodes, output,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ppo-model", type=Path, default=Path("models/ppo_500k.zip"))
+    parser.add_argument("--ppo-model", type=Path, default=MODELS / "ppo_500k.zip")
     parser.add_argument("--joint-checkpoint", type=Path)
     parser.add_argument("--seeker-checkpoint", type=Path,
                         help="Phase B checkpoint; defaults to the joint Seeker if omitted")
@@ -237,7 +238,7 @@ def main():
     parser.add_argument("--historical-seekers", type=Path, nargs="*", default=[])
     parser.add_argument("--seeds", type=int, nargs="+", default=[10001, 11001, 12001])
     parser.add_argument("--episodes", type=int, default=20)
-    parser.add_argument("--output", type=Path, default=Path("runs/evaluation"))
+    parser.add_argument("--output", type=Path, default=RUNS / "evaluation")
     parser.add_argument("--hidden-start", action="store_true")
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--baseline-only", action="store_true", help="Stage 1 only: scripted Seeker vs PPO")
@@ -253,7 +254,7 @@ def main():
         evaluate(args.ppo_model, args.joint_checkpoint, args.seeker_checkpoint, args.seeds,
                  args.episodes, args.output, args.historical_evaders, args.historical_seekers,
                  args.hidden_start, args.render, args.baseline_only, args.stage1_reference)
-        from plot_stage2 import plot_evaluation
+        from scripts.plot_stage2 import plot_evaluation
         plot_evaluation(args.output)
     except (ValueError, FileNotFoundError, FileExistsError) as exc:
         parser.error(str(exc))

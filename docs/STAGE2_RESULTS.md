@@ -33,7 +33,7 @@ Reading it:
 
 ## Proposal metrics (5 seeds x 60 starts = 300 episodes per row)
 
-Computed by `evaluate_stage2.py` (see `comparison.md` in each evaluation folder). "Hidden-start" evaluation points the
+Computed by `scripts/evaluate_stage2.py` (see `comparison.md` in each evaluation folder). "Hidden-start" evaluation points the
 Seeker's camera away from the Evader at step 0 (`--hidden-start`), so time-to-first-detection measures real search time.
 
 | Matchup | Evader visible % (visible start) | Evader visible % (hidden start) | First detection, hidden start: mean / median s (episodes detected) |
@@ -64,7 +64,7 @@ Seeker's camera away from the Evader at step 0 (`--hidden-start`), so time-to-fi
 
 See also [COMPARISONS.md](COMPARISONS.md) (MAPPO, ablations, opponent pool) and [FUTURE_WORK.md](FUTURE_WORK.md) (physical drones).
 
-## Recipe (`maddpg_config_final.json`, `maddpg_config_final_phaseB.json`)
+## Recipe (`configs/maddpg_config_final.json`, `configs/maddpg_config_final_phaseB.json`)
 
 1. Phase B: train the Seeker alone against a frozen PPO Evader (400k steps).
 2. Phase C: warm-start from that Seeker, 600k steps of joint training with per-episode opponent mixing:

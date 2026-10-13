@@ -5,11 +5,11 @@ from gymnasium import spaces
 from gymnasium.utils import seeding
 from pettingzoo import ParallelEnv
 
-from vanishing_point_core import (
+from vp.core import (
     Simulator, ScriptedSeekerPolicy, checked_vector, limit_velocity,
     SEEKER_SPEED, EVADER_SPEED, DT,
 )
-from vanishing_point_render import RendererMixin
+from vp.render import RendererMixin
 
 AGENTS = ("seeker", "evader")
 

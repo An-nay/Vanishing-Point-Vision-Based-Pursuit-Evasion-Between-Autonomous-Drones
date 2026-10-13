@@ -3,10 +3,11 @@ import argparse
 import tempfile
 from pathlib import Path
 import numpy as np
-from vanishing_point_core import sample_initial_state
-from policy_io import load_policy
-from stage2_opponents import PPOEvader
-from evaluate_stage2 import evaluate_matchup
+from vp.core import sample_initial_state
+from vp.policy_io import load_policy
+from vp.opponents import PPOEvader
+from scripts.evaluate_stage2 import evaluate_matchup
+from vp.paths import MODELS
 
 
 def main():
@@ -14,7 +15,7 @@ def main():
     parser.add_argument("--joint-checkpoint", type=Path, required=True)
     parser.add_argument("--seeker-checkpoint", type=Path,
                         help="Phase B checkpoint for the learned-Seeker-vs-PPO matchup")
-    parser.add_argument("--ppo-model", type=Path, default=Path("models/ppo_500k.zip"))
+    parser.add_argument("--ppo-model", type=Path, default=MODELS / "ppo_500k.zip")
     parser.add_argument("--matchups", nargs="+", default=["stage2_joint"],
                         choices=["stage1_baseline", "learned_seeker_ppo", "stage2_joint"])
     parser.add_argument("--seed", type=int, default=10001)

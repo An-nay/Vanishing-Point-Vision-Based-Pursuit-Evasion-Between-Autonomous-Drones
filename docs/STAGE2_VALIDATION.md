@@ -41,7 +41,7 @@ machine precision was corrected before the final 9,000-transition run.
 The smoke configuration uses 32-unit hidden layers, batch size 32, replay
 capacity 2,000, 32 warmup steps, updates every eight steps and checkpointing
 every 600 steps. It retains the normal 600-step episode horizon and 0.1 s
-timestep. Default longer runs use `maddpg_config.json`.
+timestep. Default longer runs use `configs/maddpg_config.json`.
 
 Local generated artifacts (ignored by Git):
 

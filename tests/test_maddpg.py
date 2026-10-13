@@ -4,9 +4,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from maddpg import MADDPG, ReplayBuffer, load_config, bellman_target
-from train_maddpg import train, noise_at
-from vanishing_point_parallel import VanishingPointParallelEnv, AGENTS
+from vp.maddpg import MADDPG, ReplayBuffer, load_config, bellman_target
+from scripts.train_maddpg import train, noise_at
+from vp.parallel import VanishingPointParallelEnv, AGENTS
 
 
 def small_config():
@@ -240,8 +240,8 @@ def test_frozen_seeker_action_enters_the_evaders_critic_but_never_the_seekers_ow
 
 
 def test_opponent_provider_uses_each_rows_own_snapshot_and_flags_evicted_rows():
-    from maddpg import Actor
-    from stage2_opponents import OpponentProvider
+    from vp.maddpg import Actor
+    from vp.opponents import OpponentProvider
     torch.manual_seed(0)
     build = lambda: Actor(21, 3, [8, 8])
     provider = OpponentProvider("evader", 3, fixed=None, capacity=2, build_actor=build)
