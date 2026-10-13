@@ -3,6 +3,7 @@ import argparse
 import csv
 from pathlib import Path
 import numpy as np
+from vp.paths import RUNS
 
 
 def read_rows(path):
@@ -137,7 +138,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=Path, nargs="*")
     parser.add_argument("--evaluation", type=Path)
-    parser.add_argument("--output", type=Path, default=Path("runs/plots"))
+    parser.add_argument("--output", type=Path, default=RUNS / "plots")
     parser.add_argument("--smooth", type=int, default=20, help="moving-average window in episodes")
     parser.add_argument("--mode", default="selfplay", help="episode mode to plot ('' = all modes)")
     args = parser.parse_args()

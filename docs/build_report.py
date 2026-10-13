@@ -196,7 +196,7 @@ P("<b>A plausible explanation (no ablation was run to confirm it).</b> Reward on
   "are consistent with this: under curriculum, ep_rew_mean recovers within a few thousand timesteps after each difficulty "
   "increase, and wall-touch variance across seeds stays in a tight band (2.60-3.80) while plain PPO ranges far wider "
   "(4.20-9.50), including one seed (2002) that settled on a distinctly wall-heavy strategy.")
-figure(DOCS.parent / "convergence.png", "Figure 1. Stage 1 (open arena) reward convergence, plain vs curriculum PPO, one seed each.", WIDTH * 0.82,
+figure(FIG / "convergence.png", "Figure 1. Stage 1 (open arena) reward convergence, plain vs curriculum PPO, one seed each.", WIDTH * 0.82,
        heading="3.3 Reward convergence")
 P("Curriculum training starts far higher since its early stages face an easy, slow, narrow-sighted Seeker, so an early lead "
   "there is expected, not meaningful. Both curves reach a similar plateau by the end, and curriculum PPO dips slightly below "
@@ -385,7 +385,7 @@ bullets(["<b>Pros:</b> rule-compliant (policy-gradient, model-free, no scripted 
 H("5. Which model to use, and current status")
 P("For the open arena, plain PPO (seed 577448602, saved as models/ppo_500k) remains the headline Stage 1 result. In the obstacle world "
   "the reference opponents are the PPO models models/ppo_city_plain_s2001 (used in training) and s2002 (held out for evaluation). For "
-  "Stage 2 the recommended system is the final MADDPG recipe (Section 4.4; maddpg_config_final_phaseB.json then maddpg_config_final.json), "
+  "Stage 2 the recommended system is the final MADDPG recipe (Section 4.4; configs/maddpg_config_final_phaseB.json then configs/maddpg_config_final.json), "
   "reported as a mean with its seed spread rather than as one best seed. Seed 2001 is used for the figures in this report. More training "
   "steps are not expected to help: PPO plateaus by about 250k steps and the joint MADDPG curves oscillate without trend. "
   "Phases 1, 2 and 3 (simulator, PPO with curriculum, simultaneous MADDPG learning) are complete; Phase 4 (physical drones) is not.")
@@ -427,13 +427,13 @@ P("All commands assume the project's Python environment (pip install -r requirem
   "(git-ignored).")
 H("8.1 Stage 1 (open arena)", 2)
 code("""
-python vanishing_point_ppo.py random --episodes 20
-python vanishing_point_ppo.py train --timesteps 500000 --seed 577448602 \\
+python -m vp.ppo random --episodes 20
+python -m vp.ppo train --timesteps 500000 --seed 577448602 \\
     --model models/ppo_500k --tensorboard-log logs/
-python vanishing_point_ppo.py train --curriculum --timesteps 500000 --seed 577448602 \\
+python -m vp.ppo train --curriculum --timesteps 500000 --seed 577448602 \\
     --model models/ppo_curr --tensorboard-log logs/
-python vanishing_point_ppo.py eval --model models/ppo_500k --episodes 20
-python plot_convergence.py --plain logs/PPO_1 --curriculum logs/PPO_3 --out convergence.png
+python -m vp.ppo eval --model models/ppo_500k --episodes 20
+python -m scripts.plot_convergence --plain logs/PPO_1 --curriculum logs/PPO_3 --out docs/figures/convergence.png
 pytest -q
 """)
 P("Give every training run its own --tensorboard-log folder if runs are started at the same time; otherwise they race for the "
@@ -441,28 +441,28 @@ P("Give every training run its own --tensorboard-log folder if runs are started 
 H("8.2 Stage 2 (obstacle world)", 2)
 code("""
 # opponents inside the obstacle world
-python vanishing_point_ppo.py train --obstacles city --timesteps 500000 --seed 2001 \\
+python -m vp.ppo train --obstacles city --timesteps 500000 --seed 2001 \\
     --model models/ppo_city_plain_s2001 --tensorboard-log logs_city/curve_plain_2001
 # Phase B: Seeker alone against a frozen PPO Evader
-python train_maddpg.py --phase seeker --config maddpg_config_final_phaseB.json \\
+python -m scripts.train_maddpg --phase seeker --config configs/maddpg_config_final_phaseB.json \\
     --opponent ppo --opponent-model models/ppo_city_plain_s2001.zip \\
     --output runs/B --seeds 2001
 # Phase C: joint training with opponent mixing
-python train_maddpg.py --phase simultaneous --config maddpg_config_final.json \\
+python -m scripts.train_maddpg --phase simultaneous --config configs/maddpg_config_final.json \\
     --initialize runs/B/seeker_s2001/final.pt --output runs/C --seeds 2001
 # evaluation: 60 paired starts, unshaped rewards, bootstrap CIs
 # (add --hidden-start to measure time to first detection)
-python evaluate_stage2.py --ppo-model models/ppo_city_plain_s2002.zip \\
+python -m scripts.evaluate_stage2 --ppo-model models/ppo_city_plain_s2002.zip \\
     --seeker-checkpoint runs/B/seeker_s2001/final.pt \\
     --joint-checkpoint runs/C/simultaneous_s2001/final.pt --output runs/eval
 # stability, ablations and the MAPPO comparison
-python crossplay_stage2.py --checkpoints <runs...> --labels <names...> --output runs/cross
-python ablation_report.py A0_final A1_nohist ...     # reads runs/ev_<variant>_s<seed>
-python train_mappo.py --phase seeker --config mappo_config_phaseB.json \\
+python -m scripts.crossplay_stage2 --checkpoints <runs...> --labels <names...> --output runs/cross
+python -m scripts.ablation_report A0_final A1_nohist ...     # reads runs/ev_<variant>_s<seed>
+python -m scripts.train_mappo --phase seeker --config configs/mappo_config_phaseB.json \\
     --opponent-model models/ppo_city_plain_s2001.zip --output runs/mappo_B --seeds 2001
 # watch: PyBullet 3D window and 2D GIF
-python replay_stage2.py --joint-checkpoint runs/C/simultaneous_s2001/final.pt --seed 10003
-python vanishing_point_view2d.py --matchup joint --obstacles city \\
+python -m scripts.replay_stage2 --joint-checkpoint runs/C/simultaneous_s2001/final.pt --seed 10003
+python -m scripts.view2d --matchup joint --obstacles city \\
     --joint-checkpoint runs/C/simultaneous_s2001/final.pt --out joint.gif
 """)
 

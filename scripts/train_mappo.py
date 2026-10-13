@@ -1,7 +1,7 @@
 """MAPPO training: Phase B (Seeker vs frozen PPO Evader) and joint training with opponent mixing.
 
-    python train_mappo.py --phase seeker --opponent-model models/ppo_city_plain_s2001.zip --output runs/mappo_B --seeds 2001
-    python train_mappo.py --phase simultaneous --initialize runs/mappo_B/seeker_s2001/final.pt --output runs/mappo_C --seeds 2001
+    python -m scripts.train_mappo --phase seeker --opponent-model models/ppo_city_plain_s2001.zip --output runs/mappo_B --seeds 2001
+    python -m scripts.train_mappo --phase simultaneous --initialize runs/mappo_B/seeker_s2001/final.pt --output runs/mappo_C --seeds 2001
 
 Same environment, observations, opponent mixing, alternating blocks and evaluation as the MADDPG recipe.
 Steps where an agent's action came from a frozen opponent are masked out of that agent's PPO loss
@@ -12,10 +12,11 @@ import csv
 import json
 from pathlib import Path
 import numpy as np
-from vanishing_point_parallel import VanishingPointParallelEnv, AGENTS
-from mappo import MAPPO, load_mappo_config, gae, DEFAULT_MAPPO_CONFIG
-from stage2_opponents import make_evader, CheckpointOpponent
-from train_maddpg import EPISODE_FIELDS, UPDATE_FIELDS, episode_seed, choose_mode
+from vp.parallel import VanishingPointParallelEnv, AGENTS
+from vp.mappo import MAPPO, load_mappo_config, gae, DEFAULT_MAPPO_CONFIG
+from vp.opponents import make_evader, CheckpointOpponent
+from scripts.train_maddpg import EPISODE_FIELDS, UPDATE_FIELDS, episode_seed, choose_mode
+from vp.paths import RUNS
 
 
 def train(config, phase, output, opponent_model=None, initialize=None):
@@ -139,7 +140,7 @@ def main():
     parser.add_argument("--config", type=Path, default=DEFAULT_MAPPO_CONFIG)
     parser.add_argument("--total-steps", type=int)
     parser.add_argument("--seeds", type=int, nargs="+")
-    parser.add_argument("--output", type=Path, default=Path("runs/mappo"))
+    parser.add_argument("--output", type=Path, default=RUNS / "mappo")
     parser.add_argument("--opponent-model", type=Path, help="frozen PPO Evader (phase seeker)")
     parser.add_argument("--initialize", type=Path, help="pretrained MAPPO Seeker to warm-start from")
     args = parser.parse_args()

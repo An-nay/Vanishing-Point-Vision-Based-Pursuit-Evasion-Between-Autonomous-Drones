@@ -1,6 +1,6 @@
 """Cross-play stability test: every Seeker from independent training runs against every Evader.
 
-    python crossplay_stage2.py --checkpoints runs/a/final.pt runs/b/final.pt ... --labels s1 s2 ... --output runs/cross
+    python -m scripts.crossplay_stage2 --checkpoints runs/a/final.pt runs/b/final.pt ... --labels s1 s2 ... --output runs/cross
 
 Entry (i, j) = mean % of the episode the Evader of run j is visible to the Seeker of run i on the same held-out
 starts. The diagonal is each run's own co-trained pair; off-diagonals are strangers that never trained together.
@@ -11,9 +11,9 @@ import argparse
 import csv
 from pathlib import Path
 import numpy as np
-from policy_io import load_policy
-from vanishing_point_core import sample_initial_state
-from vanishing_point_parallel import VanishingPointParallelEnv
+from vp.policy_io import load_policy
+from vp.core import sample_initial_state
+from vp.parallel import VanishingPointParallelEnv
 
 
 def play(env, seeker, evader, seed, start):

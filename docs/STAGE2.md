@@ -9,16 +9,16 @@ unchanged for provenance.
 
 | File | Purpose |
 |---|---|
-| `vanishing_point_core.py` | Arena constants, original FOV geometry, velocity scaling, joint dynamics, obstacles, (Stage 1) scripted Seeker, memory and statistics |
-| `vanishing_point_render.py` | Original arena/drone/debug rendering extracted into a lazy PyBullet mixin |
-| `vanishing_point_ppo.py` | Existing Gymnasium PPO wrapper, training, curriculum and evaluation CLI |
-| `vanishing_point_parallel.py` | PettingZoo Parallel API with `seeker` and `evader` |
-| `maddpg.py` | Local actors, centralized critics, targets, replay, optimization and checkpoints |
-| `maddpg_config.json` | All Stage 2 network, optimization, exploration and environment configuration |
-| `stage2_opponents.py` | Frozen PPO, random and historical MADDPG opponents |
-| `train_maddpg.py` | Phases A, B and C, multi-seed runs and CSV logging |
-| `evaluate_stage2.py` | Phase D, paired evaluation of learned policies (plus held-out Seekers), bootstrap CIs, unshaped rewards |
-| `plot_stage2.py` | Learning curves, visibility comparisons and 3D trajectories |
+| `vp/core.py` | Arena constants, original FOV geometry, velocity scaling, joint dynamics, obstacles, (Stage 1) scripted Seeker, memory and statistics |
+| `vp/render.py` | Original arena/drone/debug rendering extracted into a lazy PyBullet mixin |
+| `vp/ppo.py` | Existing Gymnasium PPO wrapper, training, curriculum and evaluation CLI |
+| `vp/parallel.py` | PettingZoo Parallel API with `seeker` and `evader` |
+| `vp/maddpg.py` | Local actors, centralized critics, targets, replay, optimization and checkpoints |
+| `configs/maddpg_config.json` | All Stage 2 network, optimization, exploration and environment configuration |
+| `vp/opponents.py` | Frozen PPO, random and historical MADDPG opponents |
+| `scripts/train_maddpg.py` | Phases A, B and C, multi-seed runs and CSV logging |
+| `scripts/evaluate_stage2.py` | Phase D, paired evaluation of learned policies (plus held-out Seekers), bootstrap CIs, unshaped rewards |
+| `scripts/plot_stage2.py` | Learning curves, visibility comparisons and 3D trajectories |
 | `tests/test_stage2_environment.py` | Joint dynamics, FOV, camera, information restrictions, rewards and API tests |
 | `tests/test_maddpg.py` | Learning, replay alignment, targets, frozen opponents, checkpoint and reproducibility tests |
 | `tests/test_stage2_evaluation.py` | Paired starting conditions, saved PPO evaluation and censored-event aggregation |
@@ -34,7 +34,7 @@ its official CPU wheel before the other requirements:
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -r requirements.txt
 python -m pytest -q
-python train_maddpg.py --phase validate --episodes 2
+python -m scripts.train_maddpg --phase validate --episodes 2
 ```
 
 Headless environment validation never imports PyBullet or opens a GUI.
@@ -144,7 +144,7 @@ and global state are not needed to execute the saved actors.
 
 ## Training
 
-All defaults are in `maddpg_config.json`: two 128-unit ReLU layers, tanh
+All defaults are in `configs/maddpg_config.json`: two 128-unit ReLU layers, tanh
 actors, actor LR 0.0003, critic LR 0.001, batch size 128, replay 100,000,
 gamma 0.99, tau 0.01, gradient norm cap 10, 2,000 warmup steps, an update
 every 10 steps, Gaussian exploration decaying from 0.3 to 0.05 over
@@ -154,8 +154,8 @@ only required device; one PyTorch thread avoids overhead on these small MLPs.
 ### Phase A: validate random joint actions
 
 ```powershell
-python train_maddpg.py --phase validate --episodes 2
-python train_maddpg.py --phase validate --episodes 1 --render
+python -m scripts.train_maddpg --phase validate --episodes 2
+python -m scripts.train_maddpg --phase validate --episodes 1 --render
 ```
 
 This runs PettingZoo's `parallel_api_test`, then reports random rollouts.
@@ -165,13 +165,13 @@ This runs PettingZoo's `parallel_api_test`, then reports random rollouts.
 Use the existing PPO model:
 
 ```powershell
-python train_maddpg.py --phase seeker --opponent ppo --opponent-model models/ppo_500k.zip --output runs/phase_b --seeds 2001
+python -m scripts.train_maddpg --phase seeker --opponent ppo --opponent-model models/ppo_500k.zip --output runs/phase_b --seeds 2001
 ```
 
 For a quick random-opponent check:
 
 ```powershell
-python train_maddpg.py --phase seeker --opponent random --output runs/phase_b_random --total-steps 10000
+python -m scripts.train_maddpg --phase seeker --opponent random --output runs/phase_b_random --total-steps 10000
 ```
 
 Only the Seeker actor/critic and targets update. Replay stores the actual
@@ -189,13 +189,13 @@ An older Evader can also be frozen with
 ### Phase C: simultaneous learning
 
 ```powershell
-python train_maddpg.py --phase simultaneous --output runs/phase_c --seeds 2001 2002 2003
+python -m scripts.train_maddpg --phase simultaneous --output runs/phase_c --seeds 2001 2002 2003
 ```
 
 Optionally warm-start from Phase B:
 
 ```powershell
-python train_maddpg.py --phase simultaneous --initialize runs/phase_b/seeker_s2001/final.pt --output runs/phase_c_warm --seeds 2001
+python -m scripts.train_maddpg --phase simultaneous --initialize runs/phase_b/seeker_s2001/final.pt --output runs/phase_c_warm --seeds 2001
 ```
 
 Warm-start requires compatible network sizes and spaces. It loads actors,
@@ -229,7 +229,7 @@ CPU stack; exact agreement across different library versions is not promised.
 ## Phase D: paired comparisons and robustness
 
 ```powershell
-python evaluate_stage2.py --ppo-model models/ppo_500k.zip --seeker-checkpoint runs/phase_b/seeker_s2001/final.pt --joint-checkpoint runs/phase_c/simultaneous_s2001/final.pt --seeds 10001 11001 12001 --episodes 3 --output runs/evaluation_s2001
+python -m scripts.evaluate_stage2 --ppo-model models/ppo_500k.zip --seeker-checkpoint runs/phase_b/seeker_s2001/final.pt --joint-checkpoint runs/phase_c/simultaneous_s2001/final.pt --seeds 10001 11001 12001 --episodes 3 --output runs/evaluation_s2001
 ```
 
 This evaluates:
@@ -261,7 +261,7 @@ camera facing away from the target; initial detection memory is empty.
 
 For a Stage 1-only reference:
 ```powershell
-python evaluate_stage2.py --baseline-only --output runs/stage1_reference
+python -m scripts.evaluate_stage2 --baseline-only --output runs/stage1_reference
 ```
 
 Outputs:
@@ -293,7 +293,7 @@ hidden streak even though it was not preceded by a loss-of-sight event.
 Plot learning curves for one or several independent training runs:
 
 ```powershell
-python plot_stage2.py --runs runs/phase_c/simultaneous_s2001 runs/phase_c/simultaneous_s2002 runs/phase_c/simultaneous_s2003 --output runs/phase_c/plots
+python -m scripts.plot_stage2 --runs runs/phase_c/simultaneous_s2001 runs/phase_c/simultaneous_s2002 runs/phase_c/simultaneous_s2003 --output runs/phase_c/plots
 ```
 
 This plots each seed separately; comparison standard deviations describe
@@ -337,11 +337,11 @@ Opt-in config keys (all default to the original behaviour):
 | `alternate_every`, `alternate_pattern` | Train one agent per block of N steps (pattern e.g. `["seeker","seeker","evader"]`) |
 | `mix_ppo_evader`, `mix_ppo_model`, `mix_frozen_seeker` | Per-episode opponent mixing: a frozen PPO Evader and/or a frozen learned Seeker (the `--initialize` checkpoint). A frozen policy's next action enters only the OTHER agent's critic target |
 
-Other changes: training episode seeds no longer overlap across training seeds; `evaluate_stage2.py` defaults to 20 episodes per seed group,
+Other changes: training episode seeds no longer overlap across training seeds; `scripts/evaluate_stage2.py` defaults to 20 episodes per seed group,
 always scores unshaped rewards, reports bootstrap CIs and paired differences, and fixes `seed_count`.
-`vanishing_point_view2d.py` renders GIF/PNG replays without PyBullet.
+`scripts/view2d.py` renders GIF/PNG replays without PyBullet.
 
 | `mix_pool_seeker`, `mix_pool_evader`, `pool_every`, `pool_size` | Opponent pool: per-episode probability of playing a sampled past snapshot of the Seeker / Evader; snapshot interval (steps) and number kept |
 
-MAPPO is a separate comparison implementation (`mappo.py`, `train_mappo.py`); `policy_io.load_policy` loads either checkpoint type, and
-`evaluate_stage2.py`, `crossplay_stage2.py` and the viewers accept both. Results: [COMPARISONS.md](COMPARISONS.md).
+MAPPO is a separate comparison implementation (`vp/mappo.py`, `scripts/train_mappo.py`); `policy_io.load_policy` loads either checkpoint type, and
+`scripts/evaluate_stage2.py`, `scripts/crossplay_stage2.py` and the viewers accept both. Results: [COMPARISONS.md](COMPARISONS.md).

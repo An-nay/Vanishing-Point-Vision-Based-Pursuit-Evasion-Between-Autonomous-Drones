@@ -5,9 +5,9 @@ import csv
 import json
 import numpy as np
 import pytest
-from evaluate_stage2 import evaluate, comparison_rows, SCALAR_METRICS, bootstrap_ci, paired_differences
-from maddpg import MADDPG, load_config
-from vanishing_point_parallel import AGENTS
+from scripts.evaluate_stage2 import evaluate, comparison_rows, SCALAR_METRICS, bootstrap_ci, paired_differences
+from vp.maddpg import MADDPG, load_config
+from vp.parallel import AGENTS
 
 
 def test_missing_events_are_not_counted_as_zero_delay():
@@ -94,7 +94,7 @@ def test_scripted_stage1_reference_is_opt_in(tmp_path):
 
 
 def test_crossplay_matrix_and_summary(tmp_path):
-    from crossplay_stage2 import crossplay, summarize
+    from scripts.crossplay_stage2 import crossplay, summarize
     config = load_config()
     config["hidden_sizes"] = [16, 16]
     config["environment"]["episode_steps"] = 30

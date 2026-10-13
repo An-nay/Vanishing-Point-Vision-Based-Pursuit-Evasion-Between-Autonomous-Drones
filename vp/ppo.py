@@ -26,8 +26,9 @@ from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 
 
-from vanishing_point_core import *  # Preserve public Stage 1 constants/helpers.
-from vanishing_point_render import RendererMixin
+from vp.core import *  # Preserve public Stage 1 constants/helpers.
+from vp.render import RendererMixin
+from vp.paths import MODELS
 
 
 class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
@@ -341,7 +342,7 @@ def parse_args():
     train_parser.add_argument("--timesteps", type=int, default=200_000)
     train_parser.add_argument("--seed", type=int, default=None)
     train_parser.add_argument(
-        "--model", type=str, default="models/vanishing_point_ppo"
+        "--model", type=str, default=str(MODELS / "vanishing_point_ppo")
     )
     train_parser.add_argument(
         "--tensorboard-log", type=str, default=None,
@@ -360,7 +361,7 @@ def parse_args():
 
     eval_parser = subparsers.add_parser("eval", help="Evaluate trained PPO")
     eval_parser.add_argument(
-        "--model", type=str, default="models/vanishing_point_ppo"
+        "--model", type=str, default=str(MODELS / "vanishing_point_ppo")
     )
     eval_parser.add_argument("--episodes", type=int, default=5)
     eval_parser.add_argument("--seed", type=int, default=12345)

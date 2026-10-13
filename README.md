@@ -11,45 +11,55 @@ Full write-up, tables, and figures: [`docs/Vanishing_Point_Full_Overview.pdf`](d
 ## Repo structure
 
 ```
-vanishing-point/
-├── README.md, requirements.txt, .gitignore
+Codes/
+├── README.md, requirements.txt, pytest.ini, .gitignore
 │
-├── vanishing_point_core.py        # shared NumPy simulator: dynamics, FOV, obstacles + occlusion, Stage 1 scripted Seeker
-├── vanishing_point_render.py      # lazy PyBullet 3D viewer (quadcopters, obstacles, view cone)
-├── vanishing_point_view2d.py      # polished 2D viewer: top-down + side view + stats sidebar -> GIF/PNG
-├── vanishing_point_ppo.py         # Stage 1 Gymnasium env + PPO train/eval CLI
-├── vanishing_point_parallel.py    # Stage 2 PettingZoo two-agent env
-├── maddpg.py                      # MADDPG: local actors, centralised critics, replay, checkpoints
-├── train_maddpg.py                # phases: validate / seeker (vs frozen opponent) / simultaneous (mixed opponents)
-├── evaluate_stage2.py             # paired evaluation, bootstrap CIs, unshaped rewards
-├── stage2_opponents.py            # frozen PPO / random / historical MADDPG opponents
-├── plot_stage2.py, plot_convergence.py, replay_stage2.py
-├── vanishing_point_basic_sim_random_evader.py  # Phase 1 prototype (kept for provenance)
-├── maddpg_config.json             # original Stage 2 defaults
-├── maddpg_config_final.json       # final recipe (obstacles, Seeker history, opponent mixing)
-├── maddpg_config_pool.json        # opponent-pool variant
-├── mappo.py, train_mappo.py, mappo_config*.json  # MAPPO comparison (on-policy, centralised critic)
-├── policy_io.py                   # one loader for MADDPG and MAPPO checkpoints
-├── crossplay_stage2.py, stability_report.py, ablation_report.py  # stability and ablation analysis
+├── vp/                              # the library: imported by everything, never run directly (except vp.ppo)
+│   ├── core.py                      #   NumPy simulator: dynamics, FOV, obstacles + occlusion, Stage 1 scripted Seeker
+│   ├── ppo.py                       #   Stage 1 Gymnasium env + PPO train/eval CLI  (run: python -m vp.ppo ...)
+│   ├── parallel.py                  #   Stage 2 PettingZoo two-agent env
+│   ├── render.py                    #   lazy PyBullet 3D viewer (quadcopters, obstacles, view cone)
+│   ├── maddpg.py                    #   MADDPG: local actors, centralised critics, replay, checkpoints
+│   ├── mappo.py                     #   MAPPO comparison (on-policy, centralised critic)
+│   ├── opponents.py                 #   frozen PPO / random / historical opponents, opponent pool
+│   ├── policy_io.py                 #   one loader for MADDPG and MAPPO checkpoints
+│   └── paths.py                     #   ROOT / CONFIGS / MODELS / RUNS: all default paths hang off these
 │
-├── tests/                         # pytest suite (`pytest -q` from the repo root)
-├── pytest.ini
-├── models/                        # trained PPO agents (.zip): open-arena and *_city (obstacle world)
-├── logs/, logs_city/              # TensorBoard logs
-├── convergence.png
-└── docs/                          # Stage 2 docs, results, full overview PDF (Phases 1-2 and Stage 2),
-                                   # build_report.py (rebuilds the PDF; needs reportlab), figures/
+├── scripts/                         # everything you run:  python -m scripts.<name>
+│   ├── train_maddpg.py              #   phases: validate / seeker (vs frozen opponent) / simultaneous (mixed opponents)
+│   ├── train_mappo.py               #   same recipe with MAPPO
+│   ├── evaluate_stage2.py           #   paired evaluation, bootstrap CIs, unshaped rewards
+│   ├── crossplay_stage2.py          #   every Seeker vs every Evader across independent runs
+│   ├── replay_stage2.py             #   PyBullet 3D replay window
+│   ├── view2d.py                    #   2D viewer: top-down + side view + stats sidebar -> GIF/PNG
+│   ├── plot_stage2.py               #   learning curves, visibility comparisons, 3D trajectories
+│   ├── plot_convergence.py          #   PPO reward convergence from TensorBoard logs
+│   └── ablation_report.py, stability_report.py   # tables across variants / seeds
+│
+├── configs/                         # all training configs
+│   ├── maddpg_config.json           #   original Stage 2 defaults
+│   ├── maddpg_config_final*.json    #   final recipe (obstacles, Seeker history, opponent mixing); phaseB = Seeker pretrain
+│   ├── maddpg_config_pool.json      #   opponent-pool variant
+│   └── mappo_config*.json           #   MAPPO configs
+│
+├── tests/                           # pytest suite (`pytest -q` from the project root)
+├── models/                          # trained PPO agents (.zip): open-arena and *_city (obstacle world)
+├── runs/                            # training / evaluation outputs (git-ignored)
+├── logs/, logs_city/                # TensorBoard logs
+├── docs/                            # Stage 2 docs, results, full overview PDFs, build_report.py, figures/
+└── archive/                         # Phase 1 prototype (basic_sim_random_evader.py), kept for provenance
 ```
 
 A few notes on this layout:
 
-- All Python files stay **flat at the repo root** (not in a `src/` folder) because the tests import `vanishing_point_ppo` directly (`import vanishing_point_ppo as vp`), and every command in the report's appendix assumes you're running from this same folder. Nesting them would break both without extra path plumbing.
-- `models/` and `logs/` are small (~1.2 MB and ~1.9 MB) so they're checked into git as-is — no Git LFS needed. If you'd rather not version binary model checkpoints, add `models/*.zip` to `.gitignore` and note in this README that they're regenerated via the training commands below.
-- `__pycache__/`, `.pytest_cache/`, and `.DS_Store` from the zip are excluded via `.gitignore` (see below) — they're local build artifacts, not source.
+- **Run everything from the project root.** Libraries live in the `vp/` package and runnable programs in `scripts/`, so use `python -m scripts.<name>` (not `python scripts/<name>.py`) and `python -m vp.ppo` for Stage 1. Running as a module is what lets the scripts and tests import each other.
+- **Paths are anchored to the project root.** Default locations for configs, `models/` and `runs/` come from `vp/paths.py`, so they don't depend on your working directory. If you move a folder, change it there. Paths you pass on the command line (`--output`, `--model`, ...) are used as given, relative to where you run.
+- `models/` and `logs/` are small (~1.2 MB and ~1.9 MB) so they're checked into git as-is, no Git LFS needed.
+- `__pycache__/`, `.pytest_cache/`, `.venv/` and `.DS_Store` are excluded via `.gitignore`.
 
 ## Environment
 
-`VanishingPointEnv` (Gymnasium-compatible, defined in `vanishing_point_ppo.py`):
+`VanishingPointEnv` (Gymnasium-compatible, defined in `vp/ppo.py`):
 
 | | |
 |---|---|
@@ -69,48 +79,137 @@ A few notes on this layout:
 ## Setup
 
 ```bash
-conda create -n vp python=3.11 -y
-conda activate vp
+python3.11 -m venv .venv            # or: conda create -n vp python=3.11 -y && conda activate vp
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+On macOS, if `pybullet` fails to build, install it with `CFLAGS="-Dfdopen=fdopen" pip install pybullet`. Only the 3D viewers use PyBullet; headless training and evaluation don't import it.
+
+Check the install (about 10 seconds):
+
+```bash
+pytest -q          # expect: 74 passed
+```
+
+## Run the whole project, end to end
+
+Everything below runs from the project root with the environment active. The repo already ships trained PPO agents in `models/` (open arena and obstacle world), so you can start at step 4 and skip the PPO training. Outputs go to `runs/` (git-ignored) unless noted.
+
+**1. Stage 1 baseline** (open arena, scripted Seeker)
+```bash
+python -m vp.ppo random --episodes 20                      # random-Evader baseline
+python -m vp.ppo train --timesteps 500000 --seed 577448602 --model models/ppo_500k  --tensorboard-log logs/plain
+python -m vp.ppo train --curriculum --timesteps 500000 --seed 577448602 --model models/ppo_curr --tensorboard-log logs/curriculum
+python -m vp.ppo eval --model models/ppo_500k --episodes 20
+```
+Give every training run its own `--tensorboard-log` folder; runs that share one interleave their logs. To plot, point `--plain` / `--curriculum` at the `PPO_N` folder inside each log directory:
+```bash
+python -m scripts.plot_convergence --plain logs/plain/PPO_1 --curriculum logs/curriculum/PPO_1 --out docs/figures/convergence.png
+tensorboard --logdir logs                                  # optional: browse the raw curves
+```
+
+**2. PPO opponents in the obstacle world** (Stage 2 needs one training opponent and one held-out evaluation opponent)
+```bash
+python -m vp.ppo train --obstacles city --timesteps 500000 --seed 2001 --model models/ppo_city_plain_s2001 --tensorboard-log logs_city/plain_2001
+python -m vp.ppo train --obstacles city --timesteps 500000 --seed 2002 --model models/ppo_city_plain_s2002 --tensorboard-log logs_city/plain_2002
+```
+
+**3. Quick MADDPG smoke test** (a couple of episodes, confirms the Stage 2 stack works)
+```bash
+python -m scripts.train_maddpg --phase validate --episodes 2
+```
+
+**4. MADDPG: the final recipe**
+```bash
+# Phase B: Seeker alone against a frozen PPO Evader
+python -m scripts.train_maddpg --phase seeker --config configs/maddpg_config_final_phaseB.json \
+    --opponent ppo --opponent-model models/ppo_city_plain_s2001.zip --output runs/B --seeds 2001
+
+# Phase C: both drones learn together, with opponent mixing, starting from the Phase B Seeker
+python -m scripts.train_maddpg --phase simultaneous --config configs/maddpg_config_final.json \
+    --initialize runs/B/seeker_s2001/final.pt --output runs/C --seeds 2001
+```
+
+**5. Evaluate** (60 paired starts, unshaped rewards, bootstrap confidence intervals; add `--hidden-start` for time-to-first-detection)
+```bash
+python -m scripts.evaluate_stage2 --ppo-model models/ppo_city_plain_s2002.zip \
+    --seeker-checkpoint runs/B/seeker_s2001/final.pt \
+    --joint-checkpoint runs/C/simultaneous_s2001/final.pt --output runs/eval
+python -m scripts.plot_stage2 --runs runs/C/simultaneous_s2001 --output runs/C/plots     # learning curves
+```
+Read `runs/eval/comparison.md` for the results table.
+
+**6. Watch the agents**
+```bash
+python -m scripts.view2d --matchup joint --obstacles city \
+    --joint-checkpoint runs/C/simultaneous_s2001/final.pt --out runs/joint.gif      # 2D GIF, no PyBullet needed
+python -m scripts.replay_stage2 --joint-checkpoint runs/C/simultaneous_s2001/final.pt   # PyBullet 3D window
+```
+
+**7. MAPPO comparison** (same environment and recipe, on-policy learner)
+```bash
+python -m scripts.train_mappo --phase seeker --config configs/mappo_config_phaseB.json \
+    --opponent-model models/ppo_city_plain_s2001.zip --output runs/mappo_B --seeds 2001
+python -m scripts.train_mappo --phase simultaneous --initialize runs/mappo_B/seeker_s2001/final.pt \
+    --output runs/mappo_C --seeds 2001
+python -m scripts.evaluate_stage2 --ppo-model models/ppo_city_plain_s2002.zip \
+    --joint-checkpoint runs/mappo_C/simultaneous_s2001/final.pt --output runs/ev_MAPPO_s2001
+```
+Evaluation, cross-play and the viewers load MADDPG and MAPPO checkpoints interchangeably.
+
+**8. Stability and ablation reports** (these need several independent runs, e.g. repeat step 4 with different `--seeds` / `--output`)
+```bash
+python -m scripts.crossplay_stage2 --checkpoints runs/C_a/simultaneous_s2001/final.pt runs/C_b/simultaneous_s2002/final.pt \
+    --labels s2001 s2002 --output runs/cross
+python -m scripts.stability_report --group main runs/C_*/simultaneous_s*
+python -m scripts.ablation_report --prefix runs/ev_ A0_final A1_nohist       # reads runs/ev_<variant>_s<seed>/episodes.csv
+```
+
+**9. Rebuild the report PDF** (needs `pip install reportlab`; reads the figures in `docs/figures/`)
+```bash
+python docs/build_report.py
+```
+
+The details behind each stage are in [docs/STAGE2.md](docs/STAGE2.md); results are in [docs/STAGE2_RESULTS.md](docs/STAGE2_RESULTS.md) and [docs/COMPARISONS.md](docs/COMPARISONS.md).
+
 ## Usage
 
-All commands below assume you're in this repo's root with the `vp` environment active.
+All commands below assume you're in the project root with the environment active.
 
 **Random baseline**
 ```bash
-python vanishing_point_ppo.py random --episodes 20
+python -m vp.ppo random --episodes 20
 ```
 
 **Train PPO** (plain or curriculum, ~4–5 min per 500k-step run on CPU)
 ```bash
-python vanishing_point_ppo.py train --timesteps 500000 --seed 577448602 \
+python -m vp.ppo train --timesteps 500000 --seed 577448602 \
     --model models/ppo_500k --tensorboard-log logs/
 
-python vanishing_point_ppo.py train --curriculum --timesteps 500000 --seed 577448602 \
+python -m vp.ppo train --curriculum --timesteps 500000 --seed 577448602 \
     --model models/ppo_curr --tensorboard-log logs/
 ```
 
 **Evaluate a trained model**
 ```bash
-python vanishing_point_ppo.py eval --model models/ppo_500k --episodes 20
+python -m vp.ppo eval --model models/ppo_500k --episodes 20
 ```
 
 **Watch an episode render** (PyBullet GUI)
 ```bash
-python vanishing_point_ppo.py eval --model models/ppo_500k --episodes 3 --render
+python -m vp.ppo eval --model models/ppo_500k --episodes 3 --render
 ```
 
 **Override difficulty** (works on `eval` and `random`)
 ```bash
-python vanishing_point_ppo.py eval --model models/ppo_500k --episodes 20 \
+python -m vp.ppo eval --model models/ppo_500k --episodes 20 \
     --seeker-speed 1.2 --fov 70 --range 8
 ```
 
 **Plot reward convergence** (plain vs. curriculum, from TensorBoard logs)
 ```bash
-python plot_convergence.py --plain logs/PPO_1 --curriculum logs/PPO_3 --out convergence.png
+python -m scripts.plot_convergence --plain logs/PPO_1 --curriculum logs/PPO_3 --out docs/figures/convergence.png
 ```
 
 **Run the test suite**
@@ -153,12 +252,12 @@ Add a license of your choice (e.g. MIT) if you intend this to be reused — none
 
 The shared simulator, PettingZoo environment, MADDPG implementation, phased training, evaluation, plots and tests are documented in [docs/STAGE2.md](docs/STAGE2.md). All Stage 1 commands above still work.
 
-```powershell
+```bash
 python -m pip install -r requirements.txt
 python -m pytest -q
-python train_maddpg.py --phase validate --episodes 2
-python train_maddpg.py --phase seeker --opponent ppo --opponent-model models/ppo_500k.zip --output runs/phase_b
-python train_maddpg.py --phase simultaneous --output runs/phase_c --seeds 2001 2002 2003
+python -m scripts.train_maddpg --phase validate --episodes 2
+python -m scripts.train_maddpg --phase seeker --opponent ppo --opponent-model models/ppo_500k.zip --output runs/phase_b
+python -m scripts.train_maddpg --phase simultaneous --output runs/phase_c --seeds 2001 2002 2003
 ```
 
 Headless training uses CPU and does not import PyBullet. Add `--render` for playback. Checkpoints and CSV outputs go to ignored `runs/` directories; existing PPO models and logs are preserved.
@@ -167,17 +266,17 @@ Headless training uses CPU and does not import PyBullet. Add `--render` for play
 
 ```bash
 # Train / evaluate PPO inside the obstacle world (obstacle observations are appended, so retrain; the open-arena models stay valid without --obstacles)
-python vanishing_point_ppo.py train --obstacles city --timesteps 500000 --seed 2001 --model models/ppo_city_plain_s2001
-python vanishing_point_ppo.py eval  --obstacles city --model models/ppo_city_plain_s2002 --episodes 50
+python -m vp.ppo train --obstacles city --timesteps 500000 --seed 2001 --model models/ppo_city_plain_s2001
+python -m vp.ppo eval  --obstacles city --model models/ppo_city_plain_s2002 --episodes 50
 
 # Final Stage 2 recipe: Seeker pretrain (frozen PPO opponent) then mixed joint training
-python train_maddpg.py --phase seeker --config maddpg_config_final_phaseB.json --opponent ppo --opponent-model models/ppo_city_plain_s2001.zip --output runs/B
-python train_maddpg.py --phase simultaneous --config maddpg_config_final.json --initialize runs/B/seeker_s2001/final.pt --output runs/C --seeds 2001
+python -m scripts.train_maddpg --phase seeker --config configs/maddpg_config_final_phaseB.json --opponent ppo --opponent-model models/ppo_city_plain_s2001.zip --output runs/B
+python -m scripts.train_maddpg --phase simultaneous --config configs/maddpg_config_final.json --initialize runs/B/seeker_s2001/final.pt --output runs/C --seeds 2001
 
 # Evaluate (60 paired starts, unshaped rewards, bootstrap CIs) and watch
-python evaluate_stage2.py --ppo-model models/ppo_city_plain_s2002.zip --seeker-checkpoint runs/B/seeker_s2001/final.pt --joint-checkpoint runs/C/simultaneous_s2001/final.pt --output runs/eval
-python vanishing_point_view2d.py --matchup joint --obstacles city --joint-checkpoint runs/C/simultaneous_s2001/final.pt --out runs/joint.gif   # 2D top-down + side view
-python replay_stage2.py --joint-checkpoint runs/C/simultaneous_s2001/final.pt                                                                  # PyBullet 3D window
+python -m scripts.evaluate_stage2 --ppo-model models/ppo_city_plain_s2002.zip --seeker-checkpoint runs/B/seeker_s2001/final.pt --joint-checkpoint runs/C/simultaneous_s2001/final.pt --output runs/eval
+python -m scripts.view2d --matchup joint --obstacles city --joint-checkpoint runs/C/simultaneous_s2001/final.pt --out runs/joint.gif   # 2D top-down + side view
+python -m scripts.replay_stage2 --joint-checkpoint runs/C/simultaneous_s2001/final.pt                                                                  # PyBullet 3D window
 ```
 
 ## Figures and metrics

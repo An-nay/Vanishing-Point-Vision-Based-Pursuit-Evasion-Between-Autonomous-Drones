@@ -9,7 +9,7 @@ Treat the rest as suggestive.
 Columns: **Seeker vs PPO** = Evader visible % when the joint-trained Seeker faces the held-out PPO Evader (higher = stronger
 Seeker); **Evader vs held-out** = Evader visible % when the joint-trained Evader faces two held-out learned Seekers from
 other training runs (lower = stronger Evader); **Joint game** = Evader visible % between the two co-trained agents.
-Entries are mean +/- standard deviation across seeds. Reproduce with `ablation_report.py`.
+Entries are mean +/- standard deviation across seeds. Reproduce with `scripts/ablation_report.py`.
 
 ## 1. Key ablations (leave one component out of the final recipe)
 
@@ -34,7 +34,7 @@ Reading it:
 
 ## 2. MAPPO comparison
 
-MAPPO (`mappo.py`, `train_mappo.py`): the same environment, observations, wall penalty, Seeker history, opponent mixing and
+MAPPO (`vp/mappo.py`, `scripts/train_mappo.py`): the same environment, observations, wall penalty, Seeker history, opponent mixing and
 alternating blocks as the MADDPG recipe, but on-policy clipped-PPO updates (per-agent Gaussian actor, centralised value critic
 per agent, GAE, time-limit bootstrapping, loss masked on steps played by a frozen opponent). Same budgets (400k + 600k steps).
 
@@ -62,7 +62,7 @@ Per seed (2001 / 2002 / 2003), Evader visible % to the Seeker:
 
 ## 3. Opponent pool and stability
 
-The pool (`maddpg_config_pool.json`, `OpponentProvider`): every 30k steps a snapshot of both learners is stored (20 kept),
+The pool (`configs/maddpg_config_pool.json`, `OpponentProvider`): every 30k steps a snapshot of both learners is stored (20 kept),
 and 15 % of episodes play the learning Evader against a sampled past Seeker, 10 % the learning Seeker against a sampled past
 Evader. It replaces the single frozen Seeker of the main recipe. Critic targets use the snapshot that actually played each
 transition. 5 seeds, same Phase B starting Seekers and budget as the main recipe. (Evaluation here uses the 5-seed pairing of the headline
@@ -83,7 +83,7 @@ so the pool's "Evader vs held-out" is 23.3 here and 32.3 in section 1.)
 
 Summary: the pool gives **smoother training and about half the seed-to-seed spread in the joint game** (std 5.4 vs 9.9), but it
 does **not** improve average strength and does **not** improve cross-play robustness (strangers 25.4 vs 25.2). With 5 seeds none of
-these differences is statistically solid. Cross-play matrices: `crossplay_stage2.py` output in `runs/cross_nopool` and
+these differences is statistically solid. Cross-play matrices: `scripts/crossplay_stage2.py` output in `runs/cross_nopool` and
 `runs/cross_pool` (local, git-ignored).
 
 ## 4. Physical drones

@@ -1,10 +1,10 @@
 """
 Plot PPO reward convergence from TensorBoard logs.
 
-Usage (from the same folder as vanishing_point_ppo.py):
+Usage (from the project root):
 
-    python plot_convergence.py --plain logs/PPO_1 --curriculum logs/PPO_3 --out convergence.png
-    python plot_convergence.py --plain A/PPO_1 B/PPO_1 C/PPO_1 --curriculum D/PPO_1 E/PPO_1 F/PPO_1   # several seeds: mean + min-max band
+    python -m scripts.plot_convergence --plain logs/PPO_1 --curriculum logs/PPO_3 --out docs/figures/convergence.png
+    python -m scripts.plot_convergence --plain A/PPO_1 B/PPO_1 C/PPO_1 --curriculum D/PPO_1 E/PPO_1 F/PPO_1   # several seeds: mean + min-max band
 
 Each training run creates its own PPO_N subfolder inside the --tensorboard-log directory. Give EVERY run its own
 --tensorboard-log folder: runs started at the same time that share one folder race for the PPO_N names and
@@ -17,6 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+from vp.paths import ROOT
 
 
 def load_curve(log_dir, tag="rollout/ep_rew_mean"):
@@ -41,7 +42,7 @@ def main():
     parser = argparse.ArgumentParser(description="Plot PPO reward convergence (one or several seeds per group)")
     parser.add_argument("--plain", required=True, nargs="+", help="TensorBoard log dir(s), plain PPO")
     parser.add_argument("--curriculum", required=True, nargs="+", help="TensorBoard log dir(s), curriculum PPO")
-    parser.add_argument("--out", default="convergence.png", help="Output image path")
+    parser.add_argument("--out", default=str(ROOT / "docs" / "figures" / "convergence.png"), help="Output image path")
     parser.add_argument("--title", default="PPO Reward Convergence: Plain vs Curriculum")
     args = parser.parse_args()
 

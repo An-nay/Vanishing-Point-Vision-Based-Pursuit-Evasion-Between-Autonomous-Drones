@@ -3,8 +3,8 @@ import math
 import numpy as np
 import pytest
 from pettingzoo.test import parallel_api_test
-from vanishing_point_core import Simulator, DT, SEEKER_SPEED, EVADER_SPEED, is_visible
-from vanishing_point_parallel import VanishingPointParallelEnv
+from vp.core import Simulator, DT, SEEKER_SPEED, EVADER_SPEED, is_visible
+from vp.parallel import VanishingPointParallelEnv
 
 START = {"seeker_pos": [4., 10., 5.], "evader_pos": [12., 10., 5.],
          "seeker_forward": [1., 0., 0.]}
@@ -167,7 +167,7 @@ def test_reacquisition_tracks_hidden_streaks():
 
 
 def test_stage1_and_parallel_scripted_rollouts_match():
-    from vanishing_point_ppo import VanishingPointEnv
+    from vp.ppo import VanishingPointEnv
     stage1 = VanishingPointEnv()
     stage2 = VanishingPointParallelEnv()
     rng = np.random.default_rng(18)
@@ -187,11 +187,11 @@ def test_stage1_and_parallel_scripted_rollouts_match():
 
 def test_renderer_uses_shared_world_and_releases_clients(monkeypatch):
     import pybullet as bullet
-    from vanishing_point_ppo import VanishingPointEnv
+    from vp.ppo import VanishingPointEnv
     original_connect = bullet.connect
     monkeypatch.setattr(bullet, "connect", lambda mode: original_connect(bullet.DIRECT))
     # Exercise the actual renderer without opening GUI windows or waiting for playback.
-    monkeypatch.setattr("vanishing_point_parallel.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("vp.parallel.time.sleep", lambda seconds: None)
     stage1 = VanishingPointEnv(render_mode="human", randomize_start=False)
     stage2 = VanishingPointParallelEnv(render_mode="human", randomize_start=False)
     try:

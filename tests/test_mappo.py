@@ -4,11 +4,11 @@ import csv
 import numpy as np
 import pytest
 import torch
-from mappo import MAPPO, gae, load_mappo_config
-from train_mappo import train
-from policy_io import load_policy
-from vanishing_point_parallel import VanishingPointParallelEnv, AGENTS
-from evaluate_stage2 import evaluate
+from vp.mappo import MAPPO, gae, load_mappo_config
+from scripts.train_mappo import train
+from vp.policy_io import load_policy
+from vp.parallel import VanishingPointParallelEnv, AGENTS
+from scripts.evaluate_stage2 import evaluate
 from pathlib import Path
 
 

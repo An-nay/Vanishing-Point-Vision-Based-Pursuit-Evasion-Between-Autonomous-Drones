@@ -1,7 +1,7 @@
 """Lazy PyBullet visualization shared by both RL interfaces."""
 import math
 import numpy as np
-from vanishing_point_core import ARENA_X, ARENA_Y, ARENA_Z, DT
+from vp.core import ARENA_X, ARENA_Y, ARENA_Z, DT
 
 SEEKER_COLOUR = [0.90, 0.15, 0.15, 1.0]
 EVADER_COLOUR = [0.15, 0.45, 0.95, 1.0]

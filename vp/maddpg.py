@@ -5,9 +5,10 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from vanishing_point_parallel import AGENTS
+from vp.parallel import AGENTS
+from vp.paths import CONFIGS
 
-DEFAULT_CONFIG = Path(__file__).with_name("maddpg_config.json")
+DEFAULT_CONFIG = CONFIGS / "maddpg_config.json"
 
 
 def load_config(path=DEFAULT_CONFIG):

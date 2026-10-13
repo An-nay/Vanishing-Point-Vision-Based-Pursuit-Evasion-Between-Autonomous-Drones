@@ -32,7 +32,7 @@ No hardware results are claimed anywhere. This document records why the phase wa
    matching first-order lag and delay to the simulator.
 3. **Robustness training.** Retrain with domain randomisation over lag, delay, speed caps, observation noise and
    detection failure (for example a random detection-miss probability), and re-run the same evaluation
-   (`evaluate_stage2.py`, hidden and visible starts, cross-play) to confirm the policies survive the perturbations
+   (`scripts/evaluate_stage2.py`, hidden and visible starts, cross-play) to confirm the policies survive the perturbations
    in simulation first.
 4. **Safety.** Geofence smaller than the arena, a hard minimum drone separation (the simulator only measures drone
    collisions today, it does not penalise them), speed caps, a manual kill switch, and flights with props guarded.

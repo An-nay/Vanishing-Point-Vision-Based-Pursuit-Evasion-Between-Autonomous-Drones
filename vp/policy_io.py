@@ -9,7 +9,7 @@ def load_policy(path, device="cpu"):
         raise FileNotFoundError(f"checkpoint not found: {path}")
     algo = torch.load(path, map_location=device, weights_only=True).get("algo", "maddpg")
     if algo == "mappo":
-        from mappo import MAPPO
+        from vp.mappo import MAPPO
         return MAPPO.load(path, device)
-    from maddpg import MADDPG
+    from vp.maddpg import MADDPG
     return MADDPG.load(path, device)
