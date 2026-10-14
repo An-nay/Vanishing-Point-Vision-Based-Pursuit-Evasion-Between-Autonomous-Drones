@@ -99,6 +99,21 @@ OBSTACLE_PRESETS = {
         ((3.0, 4.0, 0.0), (6.0, 7.0, 5.0)),
         ((8.0, 16.0, 0.0), (12.0, 18.0, 3.0)),
     ],
+    # City blocks around an open plaza. The overpass is raised, so the
+    # high start line (y=10, z=8) still clears every box it crosses.
+    "maze": [
+        ((1.2, 16.0, 0.0), (3.6, 18.8, 10.0)),
+        ((6.8, 15.4, 0.0), (12.8, 18.5, 2.2)),
+        ((16.0, 15.2, 0.0), (18.8, 18.6, 10.0)),
+        ((17.6, 1.2, 0.0), (19.4, 3.4, 10.0)),
+        ((1.6, 1.4, 0.0), (5.8, 3.6, 3.0)),
+        ((9.6, 1.4, 0.0), (11.4, 4.6, 6.5)),
+        ((1.4, 7.4, 0.0), (4.2, 11.8, 4.6)),
+        ((12.4, 5.2, 3.2), (14.6, 6.6, 4.6)),
+        ((15.8, 8.0, 0.0), (18.8, 9.2, 6.5)),
+        ((15.8, 9.2, 0.0), (16.8, 11.0, 3.5)),
+        ((17.8, 9.2, 0.0), (18.8, 11.8, 8.2)),
+    ],
     # Sparse variant: three pillars only.
     "pillars": [
         ((5.0, 5.0, 0.0), (7.0, 7.0, 10.0)),
@@ -106,6 +121,10 @@ OBSTACLE_PRESETS = {
         ((9.0, 13.0, 0.0), (11.0, 15.0, 10.0)),
     ],
 }
+# Street lamps and two trees. Drawn only; they do not block flight.
+CITY_LIGHTS = ((4.8, 4.6), (4.8, 14.4), (15.2, 4.4), (15.2, 14.4))
+CITY_TREES = ((6.2, 8.8), (15.0, 4.0))
+
 OBSTACLE_NEIGHBOURS = 3   # nearest obstacles reported to each actor
 OBSTACLE_SCALE = 10.0     # metres; relative vectors are divided by this
 

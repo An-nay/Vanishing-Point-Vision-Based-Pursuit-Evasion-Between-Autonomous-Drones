@@ -1,12 +1,18 @@
 """Lazy PyBullet visualization shared by both RL interfaces."""
 import math
 import numpy as np
-from vp.core import ARENA_X, ARENA_Y, ARENA_Z, DT
+from vp.core import ARENA_X, ARENA_Y, ARENA_Z, DT, CITY_LIGHTS, CITY_TREES
 
 SEEKER_COLOUR = [0.90, 0.15, 0.15, 1.0]
 EVADER_COLOUR = [0.15, 0.45, 0.95, 1.0]
-OBSTACLE_COLOURS = [[0.55, 0.50, 0.45, 1.0], [0.45, 0.48, 0.55, 1.0], [0.60, 0.55, 0.40, 1.0]]
 DRONE_SCALE = 1.8  # drawn larger than the collision radius so they read as drones
+# High corner views. A shallow angle looks into the towers and hides the streets.
+CAMERA_VIEWS = (
+    (26, 40, -62),
+    (26, 130, -58),
+    (28, 220, -64),
+    (26, 310, -56),
+)
 
 class RendererMixin:
     def _init_renderer(self):
@@ -20,16 +26,28 @@ class RendererMixin:
         p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=self.physics_client)
         p.setGravity(0, 0, 0, physicsClientId=self.physics_client)
         p.setTimeStep(DT, physicsClientId=self.physics_client)
-        p.resetDebugVisualizerCamera(
-            cameraDistance=28,
-            cameraYaw=45,
-            cameraPitch=-30,
-            cameraTargetPosition=[ARENA_X / 2, ARENA_Y / 2, ARENA_Z / 2],
-            physicsClientId=self.physics_client,
-        )
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0, physicsClientId=self.physics_client)
+        try:
+            p.configureDebugVisualizer(rgbBackground=[0.0, 0.0, 0.02], physicsClientId=self.physics_client)
+        except TypeError:
+            pass
+        self._camera_frame = 0
+        self._aim_camera()
         self._trail_prev = {}
         self._heading = {'evader': 0.0}
         self._create_arena()
+
+    def _aim_camera(self):
+        """Hold each corner for five seconds, looking down over the towers."""
+        distance, yaw, pitch = CAMERA_VIEWS[(self._camera_frame // 50) % len(CAMERA_VIEWS)]
+        self._camera_frame += 1
+        p.resetDebugVisualizerCamera(
+            cameraDistance=distance,
+            cameraYaw=yaw,
+            cameraPitch=pitch,
+            cameraTargetPosition=[ARENA_X / 2, ARENA_Y / 2, 3.0],
+            physicsClientId=self.physics_client,
+        )
 
     def _create_arena(self):
         floor_shape = p.createCollisionShape(
@@ -40,7 +58,7 @@ class RendererMixin:
         floor_visual = p.createVisualShape(
             p.GEOM_BOX,
             halfExtents=[ARENA_X / 2, ARENA_Y / 2, 0.05],
-            rgbaColor=[0.75, 0.75, 0.75, 1.0],
+            rgbaColor=[0.02, 0.02, 0.06, 1.0],
             physicsClientId=self.physics_client,
         )
         p.createMultiBody(
@@ -51,36 +69,87 @@ class RendererMixin:
             physicsClientId=self.physics_client,
         )
 
-        corners = [
-            [0, 0, 0], [ARENA_X, 0, 0], [ARENA_X, ARENA_Y, 0], [0, ARENA_Y, 0],
-            [0, 0, ARENA_Z], [ARENA_X, 0, ARENA_Z],
-            [ARENA_X, ARENA_Y, ARENA_Z], [0, ARENA_Y, ARENA_Z],
+        floor = [
+            [0, 0, 0.02], [ARENA_X, 0, 0.02], [ARENA_X, ARENA_Y, 0.02], [0, ARENA_Y, 0.02],
         ]
-        edges = [
-            (0, 1), (1, 2), (2, 3), (3, 0),
-            (4, 5), (5, 6), (6, 7), (7, 4),
-            (0, 4), (1, 5), (2, 6), (3, 7),
-        ]
-        for a, b in edges:
-            p.addUserDebugLine(
-                corners[a], corners[b], [0.2, 0.2, 0.2],
-                lineWidth=1.5, lifeTime=0,
-                physicsClientId=self.physics_client,
-            )
-        for tick in range(2, int(ARENA_X), 2):  # 2 m floor grid for a sense of scale
-            p.addUserDebugLine([tick, 0, 0.01], [tick, ARENA_Y, 0.01], [0.6, 0.6, 0.6],
-                               lineWidth=1, lifeTime=0, physicsClientId=self.physics_client)
-            p.addUserDebugLine([0, tick, 0.01], [ARENA_X, tick, 0.01], [0.6, 0.6, 0.6],
-                               lineWidth=1, lifeTime=0, physicsClientId=self.physics_client)
+        for a, b in ((0, 1), (1, 2), (2, 3), (3, 0)):
+            p.addUserDebugLine(floor[a], floor[b], [0.25, 0.28, 0.85], lineWidth=2,
+                               lifeTime=0, physicsClientId=self.physics_client)
+        self._create_streets()
+        self._create_details()
+        self._create_pellets()
         self._create_obstacles()
 
+    def _create_details(self):
+        """Lamps, two trees, and a mast on each full-height tower. Debug only, no bodies."""
+        client = self.physics_client
+        for x, y in CITY_LIGHTS:
+            p.addUserDebugLine([x, y, 0.05], [x, y, 1.15], [0.55, 0.52, 0.4], lineWidth=1.2,
+                               lifeTime=0, physicsClientId=client)
+            p.addUserDebugPoints([[x, y, 1.25]], [[1.0, 0.86, 0.45]], pointSize=8,
+                                 lifeTime=0, physicsClientId=client)
+        for x, y in CITY_TREES:
+            p.addUserDebugLine([x, y, 0.05], [x, y, 1.2], [0.42, 0.3, 0.18], lineWidth=2.0,
+                               lifeTime=0, physicsClientId=client)
+            ring = []
+            for step in range(7):
+                angle = 2 * math.pi * step / 7
+                ring.append([x + 0.45 * math.cos(angle), y + 0.45 * math.sin(angle), 1.55])
+            p.addUserDebugPoints(ring, [[0.12, 0.48, 0.28]] * len(ring), pointSize=10,
+                                 lifeTime=0, physicsClientId=client)
+        for low, high in self.obstacles:
+            if high[2] < 9.5:
+                continue
+            centre = (low + high) / 2
+            p.addUserDebugLine([centre[0], centre[1], high[2]], [centre[0], centre[1], high[2] + 0.7],
+                               [0.75, 0.78, 0.9], lineWidth=1.2, lifeTime=0, physicsClientId=client)
+
+    def _create_streets(self):
+        """Lane lines on the floor. A segment is skipped when it runs through a building."""
+        def open_line(start, end):
+            start, end = np.asarray(start, float), np.asarray(end, float)
+            for step in range(8):
+                a = start + (end - start) * step / 8
+                b = start + (end - start) * (step + 1) / 8
+                mid = (a + b) / 2
+                if len(self.obstacles) and np.any(np.all((mid >= self.obstacles[:, 0]) & (mid <= self.obstacles[:, 1]), axis=1)):
+                    continue
+                p.addUserDebugLine(a, b, [0.16, 0.16, 0.26], lineWidth=1.4,
+                                   lifeTime=0, physicsClientId=self.physics_client)
+
+        for y in (5.2, 13.8):
+            open_line([0.3, y, 0.04], [ARENA_X - 0.3, y, 0.04])
+        for x in (5.6, 14.2):
+            open_line([x, 0.3, 0.04], [x, ARENA_Y - 0.3, 0.04])
+
+    def _create_pellets(self):
+        spots, colours = [], []
+        for x in np.arange(1.0, ARENA_X, 1.0):
+            for y in np.arange(1.0, ARENA_Y, 1.0):
+                point = np.array([x, y, 1.0])
+                if len(self.obstacles) and np.any(np.all((point >= self.obstacles[:, 0]) & (point <= self.obstacles[:, 1]), axis=1)):
+                    continue
+                spots.append([x, y, 0.12])
+                colours.append([0.42, 0.36, 0.22])
+        if spots:
+            p.addUserDebugPoints(spots, colours, pointSize=6, lifeTime=0, physicsClientId=self.physics_client)
+
     def _create_obstacles(self):
-        for index, (low, high) in enumerate(self.obstacles):
-            half, centre = ((high - low) / 2).tolist(), ((high + low) / 2).tolist()
-            visual = p.createVisualShape(p.GEOM_BOX, halfExtents=half,
-                                         rgbaColor=OBSTACLE_COLOURS[index % len(OBSTACLE_COLOURS)],
-                                         physicsClientId=self.physics_client)
-            p.createMultiBody(baseMass=0.0, baseVisualShapeIndex=visual, basePosition=centre,
+        identity = p.getQuaternionFromEuler([0, 0, 0])
+        for low, high in self.obstacles:
+            half, centre = (high - low) / 2, (high + low) / 2
+            cap = [half[0] * 0.92, half[1] * 0.92, min(0.12, float(half[2]) * 0.3)]
+            visual = p.createVisualShapeArray(
+                shapeTypes=[p.GEOM_BOX, p.GEOM_BOX],
+                halfExtents=[half.tolist(), cap],
+                radii=[0, 0],
+                lengths=[0, 0],
+                visualFramePositions=[[0, 0, 0], [0, 0, float(half[2] - cap[2])]],
+                visualFrameOrientations=[identity, identity],
+                rgbaColors=[[0.10, 0.12, 0.62, 1], [0.55, 0.64, 1.0, 1]],
+                physicsClientId=self.physics_client,
+            )
+            p.createMultiBody(baseMass=0.0, baseVisualShapeIndex=visual, basePosition=centre.tolist(),
                               physicsClientId=self.physics_client)
 
     def _create_drone(self, position, rgba):
@@ -179,19 +248,17 @@ class RendererMixin:
                                [0.1, 0.9, 0.1] if visible else [1.0, 0.5, 0.0],
                                lineWidth=2 if visible else 3, lifeTime=DT,
                                physicsClientId=self.physics_client)
-        status = "VISIBLE" if visible else ("BLOCKED by obstacle" if blocked else "hidden")
+        status = "VISIBLE" if visible else ("BLOCKED" if blocked else "HIDDEN")
+        mode = getattr(self, "seeker_mode", None) or getattr(getattr(self, "seeker_policy", None), "mode", "LEARNED")
         p.addUserDebugText(
-            (
-                f"Step: {self.step_count} | Mode: {getattr(self, 'seeker_mode', getattr(getattr(self, 'seeker_policy', None), 'mode', 'LEARNED'))} | "
-                f"{status} | Reward: {reward:.1f} | "
-                f"Dist: {distance:.1f}m | Angle: {angle:.1f}deg"
-            ),
-            [0.5, 0.5, ARENA_Z + 0.7],
-            textColorRGB=[0, 0, 0],
-            textSize=1.1,
+            f"{status}    {mode}",
+            [1.0, ARENA_Y - 1.0, ARENA_Z + 0.6],
+            textColorRGB=[0.92, 0.94, 1.0],
+            textSize=1.3,
             lifeTime=DT,
             physicsClientId=self.physics_client,
         )
+        self._aim_camera()
         p.stepSimulation(physicsClientId=self.physics_client)
 
     def snapshot(self, path, width=960, height=720):
