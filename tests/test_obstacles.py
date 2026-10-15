@@ -70,7 +70,7 @@ def test_observation_sizes_and_api():
     parallel_api_test(VanishingPointParallelEnv(obstacles="city", episode_steps=40), num_cycles=45)
 
 
-@pytest.mark.parametrize("preset", ["city", "pillars"])
+@pytest.mark.parametrize("preset", ["city", "pillars", "maze"])
 def test_sampled_starts_are_clear_and_visible(preset):
     boxes = make_obstacles(preset)
     for seed in range(40):
