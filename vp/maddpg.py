@@ -19,7 +19,8 @@ def load_config(path=DEFAULT_CONFIG):
                 "updates_per_step", "noise_start", "noise_end", "noise_decay_steps",
                 "checkpoint_every", "torch_threads", "total_steps", "seed", "environment"}
     optional = {"action_reg", "alternate_every", "alternate_pattern", "mix_ppo_evader", "mix_ppo_model", "mix_frozen_seeker",
-                                                  "mix_pool_seeker", "mix_pool_evader", "pool_every", "pool_size"}  # action_reg: pre-tanh L2 coefficient; alternate_every: steps per single-learner block (0 = both learn)
+                                                  "mix_pool_seeker", "mix_pool_evader", "pool_every", "pool_size",
+                                                  "actor_lr_seeker", "actor_lr_evader"}  # action_reg: pre-tanh L2 coefficient; alternate_every: steps per single-learner block (0 = both learn)
     if not required <= set(config) <= required | optional:
         raise ValueError(f"config keys differ: missing={required - set(config)}, extra={set(config) - required}")
     positive_ints = ["batch_size", "replay_capacity", "learn_every", "updates_per_step",
@@ -64,7 +65,7 @@ def load_config(path=DEFAULT_CONFIG):
         raise ValueError("alternate_pattern must be a non-empty list of agent names")
     env = config["environment"]
     env_keys = {"episode_steps", "randomize_start", "yaw_rate_deg", "pitch_rate_deg", "pitch_limit_deg"}
-    if not isinstance(env, dict) or not env_keys <= set(env) <= env_keys | {"boundary_penalty_per_step", "obstacles", "seeker_history", "seeker_history_stride"}:
+    if not isinstance(env, dict) or not env_keys <= set(env) <= env_keys | {"boundary_penalty_per_step", "seeker_boundary_penalty_per_step", "obstacles", "seeker_history", "seeker_history_stride", "include_last_known_velocity", "seeker_visible_bonus", "evader_hidden_bonus", "seeker_proximity_coef"}:
         raise ValueError(f"environment must contain exactly {sorted(env_keys)}")
     if type(env["episode_steps"]) is not int or env["episode_steps"] <= 0:
         raise ValueError("environment episode_steps must be a positive integer")
@@ -204,7 +205,9 @@ class MADDPG:
         self.target_critics = copy.deepcopy(self.critics)
         for net in list(self.target_actors.values()) + list(self.target_critics.values()):
             net.requires_grad_(False)
-        self.actor_optimizers = {a: torch.optim.Adam(self.actors[a].parameters(), lr=config["actor_lr"])
+        actor_lrs = {"seeker": config.get("actor_lr_seeker", config["actor_lr"]),
+                     "evader": config.get("actor_lr_evader", config["actor_lr"])}
+        self.actor_optimizers = {a: torch.optim.Adam(self.actors[a].parameters(), lr=actor_lrs[a])
                                  for a in AGENTS}
         self.critic_optimizers = {a: torch.optim.Adam(self.critics[a].parameters(), lr=config["critic_lr"])
                                   for a in AGENTS}

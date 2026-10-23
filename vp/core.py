@@ -239,6 +239,7 @@ class ScriptedSeekerPolicy:
         self.speed = speed
         self.forward = normalize(initial_forward)
         self.last_known_position = None
+        self.last_known_velocity = np.zeros(3)
         self.waypoint = None
         self.searches = 0
         self._start_scan()
@@ -374,7 +375,11 @@ class Simulator:
     def __init__(self, episode_steps=EPISODE_STEPS, randomize_start=True,
                  yaw_rate_deg=100.0, pitch_rate_deg=90.0, pitch_limit_deg=89.0,
                  boundary_penalty_per_step=0.0, obstacles=None,
-                 seeker_history=1, seeker_history_stride=5):
+                 seeker_history=1, seeker_history_stride=5,
+                 seeker_boundary_penalty_per_step=None,
+                 include_last_known_velocity=False,
+                 seeker_visible_bonus=None, evader_hidden_bonus=None,
+                 seeker_proximity_coef=0.0):
         if not isinstance(episode_steps, int) or episode_steps <= 0:
             raise ValueError("episode_steps must be a positive integer")
         if not np.all(np.isfinite([yaw_rate_deg, pitch_rate_deg, pitch_limit_deg])):
@@ -385,6 +390,28 @@ class Simulator:
             raise ValueError("boundary_penalty_per_step must be finite and non-negative")
         # 0 keeps the Stage 1 rule (penalty on first contact only).
         self.boundary_penalty_per_step = boundary_penalty_per_step
+        # Asymmetric wall shaping: Evader hugging the wall is the dominant exploit, so the
+        # Seeker chasing into a corner should not be punished at the same rate. If no
+        # per-agent override is given, keep the symmetric behaviour.
+        if seeker_boundary_penalty_per_step is None:
+            self.seeker_boundary_penalty_per_step = boundary_penalty_per_step
+        else:
+            if (not np.isfinite(seeker_boundary_penalty_per_step)
+                    or seeker_boundary_penalty_per_step < 0):
+                raise ValueError("seeker_boundary_penalty_per_step must be finite and non-negative")
+            self.seeker_boundary_penalty_per_step = seeker_boundary_penalty_per_step
+        # Optional Seeker memory: last-known Evader velocity (dead-reckon input).
+        self.include_last_known_velocity = bool(include_last_known_velocity)
+        # Asymmetric per-sighting reward magnitudes. None keeps the symmetric Stage 1 rule.
+        if seeker_visible_bonus is not None and (not np.isfinite(seeker_visible_bonus) or seeker_visible_bonus < 0):
+            raise ValueError("seeker_visible_bonus must be finite and non-negative")
+        if evader_hidden_bonus is not None and (not np.isfinite(evader_hidden_bonus) or evader_hidden_bonus < 0):
+            raise ValueError("evader_hidden_bonus must be finite and non-negative")
+        if not np.isfinite(seeker_proximity_coef) or seeker_proximity_coef < 0:
+            raise ValueError("seeker_proximity_coef must be finite and non-negative")
+        self.seeker_visible_bonus = seeker_visible_bonus
+        self.evader_hidden_bonus = evader_hidden_bonus
+        self.seeker_proximity_coef = float(seeker_proximity_coef)
         if type(seeker_history) is not int or seeker_history < 1 or type(seeker_history_stride) is not int or seeker_history_stride < 1:
             raise ValueError("seeker_history and seeker_history_stride must be positive integers")
         # The learned Seeker may see k past observations spaced `stride` steps apart (1 = no history).
@@ -437,6 +464,7 @@ class Simulator:
         self.reacquisition_steps = []
         self.loss_events = 0
         self.last_known_position = None
+        self.last_known_velocity = np.zeros(3)
         self.time_since_detection_steps = 0
         self.visible, self.distance, self.angle = self.check_visibility()
         self.initially_visible = self.visible
@@ -474,6 +502,7 @@ class Simulator:
     def _update_detection_memory(self):
         if self.visible:
             self.last_known_position = self.evader_pos.copy()
+            self.last_known_velocity = self.evader_velocity.copy()
             self.time_since_detection_steps = 0
 
     def advance(self, seeker_velocity, evader_velocity, *, camera_action=None,
@@ -520,8 +549,21 @@ class Simulator:
         self.evader_pos = clamp_position(proposed["evader"])
         was_visible = self.visible
         self.visible, self.distance, self.angle = self.check_visibility()
-        evader_reward = REWARD_VISIBLE if self.visible else REWARD_HIDDEN
-        seeker_reward = -evader_reward
+        # Asymmetric magnitudes let the Seeker's "I saw you" signal be larger than
+        # the Evader's "I'm hidden" signal, flipping the Evader-favoured game bias.
+        if self.visible:
+            evader_reward = REWARD_VISIBLE  # -1
+            seeker_reward = (self.seeker_visible_bonus
+                             if self.seeker_visible_bonus is not None else -REWARD_VISIBLE)
+        else:
+            evader_reward = (self.evader_hidden_bonus
+                             if self.evader_hidden_bonus is not None else REWARD_HIDDEN)
+            seeker_reward = -REWARD_HIDDEN  # -1
+        # Dense proximity bonus for the Seeker so it keeps a signal during long
+        # hidden stretches (uses true position; still just reward shaping, not a policy).
+        if self.seeker_proximity_coef:
+            dist = float(np.linalg.norm(self.seeker_pos - self.evader_pos))
+            seeker_reward += self.seeker_proximity_coef / (1.0 + dist)
         if fresh["evader"]:
             evader_reward += REWARD_BOUNDARY
             self.wall_touches += 1
@@ -531,8 +573,9 @@ class Simulator:
         if self.boundary_penalty_per_step:
             if contacts["evader"] and not fresh["evader"]:
                 evader_reward -= self.boundary_penalty_per_step
+        if self.seeker_boundary_penalty_per_step:
             if contacts["seeker"] and not fresh["seeker"]:
-                seeker_reward -= self.boundary_penalty_per_step
+                seeker_reward -= self.seeker_boundary_penalty_per_step
         self.evader_was_on_boundary = contacts["evader"]
         self.seeker_was_on_boundary = contacts["seeker"]
         for agent in contacts:
@@ -594,7 +637,7 @@ class Simulator:
 
     def _seeker_base_observation(self):
         # Relative current target only when visible; stale last-seen target otherwise.
-        # No target velocity, true distance, angle or reward-history input.
+        # Optionally also last-seen velocity (dead-reckoning input), enabled per config.
         known = self.last_known_position is not None
         relative = ((self.last_known_position - self.seeker_pos) / ARENA_SIZE
                     if known else np.zeros(3))
@@ -604,9 +647,18 @@ class Simulator:
             self.camera_forward, boundary_distances(self.seeker_pos),
             [float(self.visible)], relative, [float(known)],
             [min(self.time_since_detection_steps / self.episode_steps, 1.0)]]
+        if self.include_last_known_velocity:
+            last_vel = (self.last_known_velocity / EVADER_SPEED
+                        if known else np.zeros(3))
+            parts.append(last_vel)
         if self.obs_extra:
             parts.append(nearest_obstacle_vectors(self.seeker_pos, self.obstacles))
         return self._bounded_observation(parts)
+
+    @property
+    def seeker_base_obs_dim(self):
+        """21 base + 3 if last-known velocity is enabled + obstacle neighbours."""
+        return 21 + (3 if self.include_last_known_velocity else 0) + self.obs_extra
 
     @staticmethod
     def _bounded_observation(parts):

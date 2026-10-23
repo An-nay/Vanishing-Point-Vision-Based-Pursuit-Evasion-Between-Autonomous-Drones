@@ -25,8 +25,9 @@ class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
         self.possible_agents = list(AGENTS)
         self.agents = []
         self.sim = Simulator(**world_options)
-        obs_dim = 21 + self.sim.obs_extra  # +9 when obstacles are present
-        dims = {"seeker": obs_dim * self.sim.seeker_history, "evader": obs_dim}
+        evader_obs_dim = 21 + self.sim.obs_extra  # +9 when obstacles are present
+        seeker_obs_dim = self.sim.seeker_base_obs_dim  # may add +3 for last-known velocity
+        dims = {"seeker": seeker_obs_dim * self.sim.seeker_history, "evader": evader_obs_dim}
         self.observation_spaces = {a: spaces.Box(-1., 1., (dims[a],), np.float32) for a in AGENTS}
         self.action_spaces = {a: spaces.Box(-1., 1., (5 if a == "seeker" else 3,), np.float32)
                               for a in AGENTS}
@@ -54,6 +55,11 @@ class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
             for index, agent in enumerate(AGENTS):
                 self.action_space(agent).seed(seed + index)
         self.sim.reset_world(self.np_random, (options or {}).get("initial_state"))
+        # The scripted Seeker is instantiated here as a dormant helper for Stage 1
+        # scripts (step_scripted / view2d --matchup scripted_*). It is NEVER invoked
+        # in Stage 2: self.seeker_mode = "LEARNED" and all step() calls route
+        # through the learned actor. Assignment rule (model-free policy-gradient
+        # only in Stage 2) is respected.
         self.seeker_policy = ScriptedSeekerPolicy(self.np_random, self.sim.initial_forward,
                                                  obstacles=self.sim.obstacles)
         self.seeker_mode = "LEARNED"

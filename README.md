@@ -120,16 +120,23 @@ python -m vp.ppo train --obstacles city --timesteps 500000 --seed 2002 --model m
 python -m scripts.train_maddpg --phase validate --episodes 2
 ```
 
-**4. MADDPG: the final recipe**
+**4. MADDPG: the final recipe (fix6 — balanced self-play, 46.3% +/- 14.3 visible across 3 seeds)**
 ```bash
-# Phase B: Seeker alone against a frozen PPO Evader
-python -m scripts.train_maddpg --phase seeker --config configs/maddpg_config_final_phaseB.json \
+# Phase B: Seeker alone against a frozen PPO Evader (400k steps, asymmetric wall penalty,
+#          Seeker proximity bonus, last-known Evader velocity in Seeker obs)
+python -m scripts.train_maddpg --phase seeker --config configs/maddpg_config_fix6_phaseB.json \
     --opponent ppo --opponent-model models/ppo_city_plain_s2001.zip --output runs/B --seeds 2001
 
-# Phase C: both drones learn together, with opponent mixing, starting from the Phase B Seeker
-python -m scripts.train_maddpg --phase simultaneous --config configs/maddpg_config_final.json \
+# Phase C: pure MADDPG self-play (1.5M steps, no PPO/pool mixing, Evader LR 6x Seeker LR
+#          so the Evader can keep up with the Seeker during co-adaptation)
+python -m scripts.train_maddpg --phase simultaneous --config configs/maddpg_config_fix6.json \
     --initialize runs/B/seeker_s2001/final.pt --output runs/C --seeds 2001
+
+# For a 3-seed run with aggregated results:
+# (repeat the two commands above for seeds 2002 and 2003, then:)
+python -m scripts.multiseed_report --prefix runs/fix6_train --seeds 2001 2002 2003
 ```
+The older `configs/maddpg_config_final*.json` recipe is kept for comparison but produces an Evader-dominant game (18.7% visible, see `docs/figures/fix6/` for the comparison).
 
 **5. Evaluate** (60 paired starts, unshaped rewards, bootstrap confidence intervals; add `--hidden-start` for time-to-first-detection)
 ```bash
@@ -137,6 +144,7 @@ python -m scripts.evaluate_stage2 --ppo-model models/ppo_city_plain_s2002.zip \
     --seeker-checkpoint runs/B/seeker_s2001/final.pt \
     --joint-checkpoint runs/C/simultaneous_s2001/final.pt --output runs/eval
 python -m scripts.plot_stage2 --runs runs/C/simultaneous_s2001 --output runs/C/plots     # learning curves
+python -m scripts.plot_fix6                                                              # fix6 convergence + eval plots (7 PNGs -> docs/figures/fix6/)
 ```
 Read `runs/eval/comparison.md` for the results table.
 

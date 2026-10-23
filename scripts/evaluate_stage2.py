@@ -20,16 +20,36 @@ SCALAR_METRICS = [
 ]
 
 
+_SHAPING_KEYS = (
+    "boundary_penalty_per_step",
+    "seeker_boundary_penalty_per_step",
+    "seeker_proximity_coef",
+    "seeker_visible_bonus",
+    "evader_hidden_bonus",
+)
+
+
 def same_world(first, second):
-    """Environment settings match, ignoring the training-only wall-penalty shaping (evaluation is unshaped)."""
-    strip = lambda cfg: {k: v for k, v in cfg.items() if k != "boundary_penalty_per_step"}
+    """Environment settings match, ignoring training-only reward shaping (evaluation is unshaped)."""
+    strip = lambda cfg: {k: v for k, v in cfg.items() if k not in _SHAPING_KEYS}
     return strip(first) == strip(second)
+
+
+def _unshaped(env_options):
+    # Scrub every shaping knob to its no-op value so the eval reward matches Stage 1.
+    scrubbed = {**env_options}
+    for key in _SHAPING_KEYS:
+        if key == "seeker_visible_bonus" or key == "evader_hidden_bonus":
+            scrubbed[key] = None  # None keeps the default +/-1 symmetric Stage 1 rule
+        else:
+            scrubbed[key] = 0.0
+    return scrubbed
 
 
 def evaluate_matchup(label, seeker, evader, seed, episode, start, env_options,
                      output, render=False):
     # Always score the ORIGINAL (unshaped) rewards so numbers match Stage 1 and across configs.
-    env_options = {**env_options, "boundary_penalty_per_step": 0.0}
+    env_options = _unshaped(env_options)
     env = VanishingPointParallelEnv(render_mode="human" if render else None, **env_options)
     trajectory = []
     try:
