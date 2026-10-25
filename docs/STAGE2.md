@@ -60,9 +60,11 @@ boundaries. Leaving and touching again incurs another penalty, matching
 Stage 1. Wall contacts and detection never terminate episodes. Both agents
 truncate together at the time limit; final observations are returned for replay.
 
-No extra reward shaping is enabled by default (the final recipe turns on a training-only per-step wall penalty, see the
-additions section at the end; evaluation is always unshaped). Visibility components are opposite, but
-wall penalties make the full rewards non-zero-sum.
+No extra reward shaping is enabled by default. The current fix6 submission recipe turns on three
+training-only shaping terms (see the additions section at the end): an **asymmetric** per-step boundary
+penalty (Evader 3.5 per step, Seeker 2.0 per step), a dense Seeker proximity bonus of 0.2 / (1 + distance),
+and an action regulariser. Evaluation is always unshaped. Visibility components are opposite, but the
+wall penalties and the proximity bonus make the full rewards non-zero-sum.
 
 ### Simultaneous actions and camera updates
 
@@ -93,8 +95,10 @@ The simulator holds both true positions and velocities, camera yaw/pitch,
 visibility, last-detected target position, detection age, boundary-contact
 flags and episode time. Rendering and evaluation may read this complete world.
 
-Each actor accepts just its own observation (21 values; 30 with obstacles; the Seeker's is multiplied by `seeker_history`). Actor inference
-never accepts a global state, an opponent observation or an opponent action.
+Each actor accepts just its own observation. The Evader is 21 values (30 with obstacles). The Seeker is
+21 values at base; with `include_last_known_velocity` on (fix6 default) it becomes 24, and with obstacles
+on it becomes 33. The Seeker observation is then multiplied by `seeker_history` and stacked in time.
+Actor inference never accepts a global state, an opponent observation or an opponent action.
 
 ### Evader: the saved PPO-compatible layout
 
@@ -123,6 +127,7 @@ retains Stage 1's greater knowledge of the opponent.
 | 16:19 | Relative currently detected target, or relative last-seen target |
 | 19 | Whether any target detection has occurred |
 | 20 | Steps since last detection / episode length |
+| 21:24 | **Last-known Evader velocity / 2.2** (only when `include_last_known_velocity` is on; fix6 default). Zero before any detection. |
 
 When hidden, the relative target is computed from the stored last-seen
 absolute position and current Seeker position. It is not updated from the
@@ -150,6 +155,11 @@ gamma 0.99, tau 0.01, gradient norm cap 10, 2,000 warmup steps, an update
 every 10 steps, Gaussian exploration decaying from 0.3 to 0.05 over
 150,000 steps, and checkpoints every 25,000 steps. CPU is the default and
 only required device; one PyTorch thread avoids overhead on these small MLPs.
+
+The fix6 submission recipe overrides several of these: `configs/maddpg_config_fix6_phaseB.json` runs
+400,000 Phase B steps with the base LRs, and `configs/maddpg_config_fix6.json` runs 1,500,000 Phase C
+steps with **asymmetric actor LRs** (Seeker 3e-4, Evader 2e-3), pure self-play (all `mix_*` set to 0),
+noise annealed from 0.3 to 0.1 over 1,100,000 steps, and `alternate_every = 20000`.
 
 ### Phase A: validate random joint actions
 
@@ -321,9 +331,6 @@ Implementation references:
 [PettingZoo Parallel API](https://pettingzoo.farama.org/api/parallel/) and
 [the MADDPG paper](https://arxiv.org/abs/1706.02275).
 
-Executed checks and smoke-run artifacts are recorded in [STAGE2_VALIDATION.md](STAGE2_VALIDATION.md).
-
-
 ## Additions since the original Stage 2 (see STAGE2_RESULTS.md)
 
 Opt-in config keys (all default to the original behaviour):
@@ -331,11 +338,15 @@ Opt-in config keys (all default to the original behaviour):
 | Key | Meaning |
 |---|---|
 | `environment.obstacles` | `"city"`, `"pillars"` or a list of `[[xmin,ymin,zmin],[xmax,ymax,zmax]]` boxes. Blocks line of sight, blocks motion (scored like a wall contact), appends 9 obstacle values (3 nearest obstacles) to each observation |
-| `environment.boundary_penalty_per_step` | Extra training-only penalty for every step spent in contact (original rule: first contact only). Evaluation always uses unshaped rewards |
-| `environment.seeker_history`, `seeker_history_stride` | Seeker observation = newest + (k-1) older observations, `stride` steps apart |
-| `action_reg` | L2 penalty on actor pre-tanh outputs (prevents saturated actions) |
-| `alternate_every`, `alternate_pattern` | Train one agent per block of N steps (pattern e.g. `["seeker","seeker","evader"]`) |
-| `mix_ppo_evader`, `mix_ppo_model`, `mix_frozen_seeker` | Per-episode opponent mixing: a frozen PPO Evader and/or a frozen learned Seeker (the `--initialize` checkpoint). A frozen policy's next action enters only the OTHER agent's critic target |
+| `environment.boundary_penalty_per_step` | Extra training-only Evader penalty for every step spent in boundary contact (original rule: first contact only). Evaluation always uses unshaped rewards. **fix6 default: 3.5** |
+| `environment.seeker_boundary_penalty_per_step` | Separate Seeker boundary penalty, so the two agents can be penalised asymmetrically. **fix6 default: 2.0** (lower than the Evader's, so the Seeker is not punished for chasing the Evader into corners) |
+| `environment.seeker_proximity_coef` | Dense Seeker reward `coef / (1 + distance_to_evader)` per step. Gives a smooth search gradient during long hidden stretches. **fix6 default: 0.2** |
+| `environment.include_last_known_velocity` | Adds the Evader's last-known velocity (3 values, normalised by 2.2) to the Seeker observation, so the Seeker can dead-reckon during occlusions. **fix6 default: true** |
+| `environment.seeker_history`, `seeker_history_stride` | Seeker observation = newest + (k-1) older observations, `stride` steps apart. **fix6 default: 4 frames at stride 5** |
+| `action_reg` | L2 penalty on actor pre-tanh outputs (prevents saturated actions). **fix6 default: 0.05** |
+| `actor_lr_seeker`, `actor_lr_evader` | Per-agent actor learning rates; override `actor_lr` when present. **fix6 Phase C: Seeker 3e-4, Evader 2e-3 (6x faster)** so the Evader can keep pace with a now-competent Seeker |
+| `alternate_every`, `alternate_pattern` | Train one agent per block of N steps (pattern e.g. `["seeker","seeker","evader"]`). **fix6 default: alternate_every = 20000** |
+| `mix_ppo_evader`, `mix_ppo_model`, `mix_frozen_seeker` | Per-episode opponent mixing: a frozen PPO Evader and/or a frozen learned Seeker. A frozen policy's next action enters only the OTHER agent's critic target. **fix6 default: all 0.0** (pure self-play, no frozen opponents mixed in). Kept for the deprecated `maddpg_config_final*.json` recipe and future ablations. |
 
 Other changes: training episode seeds no longer overlap across training seeds; `scripts/evaluate_stage2.py` defaults to 20 episodes per seed group,
 always scores unshaped rewards, reports bootstrap CIs and paired differences, and fixes `seed_count`.

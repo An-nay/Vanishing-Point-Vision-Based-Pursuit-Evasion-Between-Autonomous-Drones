@@ -1,99 +1,128 @@
-# Stage 2 results (obstacle world, final recipe)
+# Stage 2 results (obstacle world, fix6 recipe)
 
 **Stage 2 contains no scripted controller.** Both agents are neural policies trained model-free with
-actor-critic policy-gradient updates (MADDPG, deterministic policy gradient). The only fixed opponent used during
-training is a frozen PPO Evader (PPO is also a model-free policy-gradient method) and a frozen *learned* Seeker.
-There is no value iteration, policy iteration, planning, search or learned/assumed environment model anywhere.
-The scripted Seeker remains Stage 1 only (`--stage1-reference` / `--baseline-only` in the evaluator).
+actor-critic policy-gradient updates (MADDPG, deterministic policy gradient). There is no value iteration,
+policy iteration, planning, search or learned/assumed environment model anywhere. The scripted Seeker
+remains Stage 1 only (`--stage1-reference` / `--baseline-only` in the evaluator). The frozen PPO Evader
+is used only during Phase B pre-training; Phase C is pure two-sided self-play with no frozen opponents
+mixed in.
 
-All numbers: `city` obstacle world (6 solid boxes, line of sight blocked), ORIGINAL unshaped rewards, 60 paired
-held-out starts per matchup (seeds 10001/11001/12001 x 20), 95 % bootstrap CIs. Training used PPO seed 2001 as the
-frozen Evader opponent; evaluation uses PPO seed 2002, so no checkpoint is scored against a policy it trained against.
+All numbers: `city` obstacle world (6 solid boxes, line of sight blocked), ORIGINAL unshaped rewards,
+3 independent training seeds (2001, 2002, 2003), evaluated per-seed via
+`scripts/multiseed_report.py --prefix runs/fix6_train --seeds 2001 2002 2003`.
+Mean +/- stddev reported across seeds.
 
-## Headline (5 training seeds)
+## Headline (fix6, 3 training seeds)
 
-"Visible %" = share of the 60 s episode the Evader is in the Seeker's view. Lower is better for the Evader.
+"Visible %" = share of the 60 s episode the Evader is in the Seeker's view. Higher = better for the Seeker.
 
-| Matchup | Seed 2001 | 2002 | 2003 | 2004 | 2005 | Mean |
-|---|---:|---:|---:|---:|---:|---:|
-| Phase B Seeker (trained alone vs PPO) vs held-out PPO Evader | 96.4 | 17.9 | 67.6 | 87.1 | 51.7 | **64.1** |
-| Joint-trained Seeker vs held-out PPO Evader | 80.8 | 34.7 | 58.1 | 11.8 | 78.7 | **52.8** |
-| Joint MADDPG Seeker vs joint MADDPG Evader | 33.3 | 7.3 | 11.6 | 20.2 | 28.8 | **20.2** |
-| Joint MADDPG Evader vs a held-out learned Seeker (another seed's Phase B Seeker) | 5.2 | 4.9 | 19.5 | 41.7 | 26.7 | **19.6** |
-| PPO Evader vs those same held-out Seekers (same starts) | 17.9 | 67.6 | 87.1 | 51.7 | 96.4 | 64.1 |
+| Matchup                                   | Visible % (mean +/- std) | Longest hidden s | Evader boundary steps | Reacq time s     |
+|-------------------------------------------|-------------------------:|-----------------:|----------------------:|-----------------:|
+| Phase B Seeker vs frozen PPO Evader       |            56.9 +/- 34.2 |      16.5 +/- 16.6 |            111 +/- 65 |      1.45 +/- 0.91 |
+| Joint Seeker vs frozen PPO Evader         |            25.8 +/- 13.8 |       36.5 +/- 6.0 |           266 +/- 116 |      5.40 +/- 4.20 |
+| **Joint Seeker vs joint Evader (fix6)**   |          **46.3 +/- 14.3** |      25.4 +/- 10.3 |          154 +/- 134 |      2.54 +/- 1.90 |
 
 Reading it:
-- A learned Seeker finds a PPO Evader much of the time (64 % / 53 % on average), but results vary a lot by seed
-  (12 % to 96 %); report the spread, not just the mean.
-- The jointly trained Evader is seen far less than the PPO Evader by the same held-out learned Seekers in all 5
-  pairings (19.6 % vs 64.1 % on average). Caveat: those Seekers were trained against PPO-type Evaders, which favours
-  them against PPO, so this comparison is tilted against PPO.
-- In the joint game neither side dominates consistently (7 % to 33 % visible).
-- Per-seed tables with CIs: `runs/final2_eval_s{2001..2005}/comparison.md` (local, git-ignored).
+- The headline self-play equilibrium (46.3 % +/- 14.3) is roughly balanced: neither side dominates.
+  The starting point before any of the fix3-6 shaping changes was 18.7 % visible, Evader-dominant,
+  with the Evader hugging a wall for 420 of 600 steps per episode.
+- Phase B Seeker vs PPO Evader is high-variance across seeds (std 34.2); individual seeds swing between
+  about 25 % and 90 %. Report the spread, not just the mean.
+- Against the frozen PPO Evader the joint Seeker is weaker than the Phase B Seeker (25.8 vs 56.9) --
+  symptom of Phase C self-play drifting the Seeker's policy toward whatever beats the current Evader,
+  not toward whatever beats PPO. This is a known cost of removing opponent mixing from Phase C.
+- Per-seed CSVs: `runs/fix6_train_s{2001,2002,2003}/eval/episodes.csv` and `runs/fix6_multiseed.md`.
 
-## Proposal metrics (5 seeds x 60 starts = 300 episodes per row)
+## Recipe (`configs/maddpg_config_fix6.json`, `configs/maddpg_config_fix6_phaseB.json`)
 
-Computed by `scripts/evaluate_stage2.py` (see `comparison.md` in each evaluation folder). "Hidden-start" evaluation points the
-Seeker's camera away from the Evader at step 0 (`--hidden-start`), so time-to-first-detection measures real search time.
+### Phase A: Smoke test
+A short validation run to confirm env + agents + replay + logging work end-to-end before spending real
+compute.
 
-| Matchup | Evader visible % (visible start) | Evader visible % (hidden start) | First detection, hidden start: mean / median s (episodes detected) |
-|---|---:|---:|---|
-| Phase B Seeker vs PPO Evader | 64.1 | 60.0 | 4.2 / 2.0 s (290 of 300) |
-| Joint-trained Seeker vs PPO Evader | 52.8 | 47.1 | 6.8 / 2.1 s (280 of 300) |
-| Joint Seeker vs joint Evader | 20.2 | 18.4 | 6.1 / 2.2 s (265 of 300) |
-| Held-out learned Seeker vs joint Evader | 19.6 | 14.6 | 6.2 / 2.0 s (254 of 300) |
+### Phase B: Seeker pre-training (400,000 steps)
+Only the Seeker learns. The Evader is a frozen PPO policy from Stage 1.
+Actor LR 3e-4 (symmetric), critic LR 1e-3, noise 0.3 -> 0.05 over 300k steps, `include_last_known_velocity = true`.
+Produces the warm-start Seeker checkpoint that Phase C initialises from.
 
-- Time to first detection is 0 s by definition when the episode starts visible. The mean is over detected episodes only;
-  episodes where the Seeker never finds the Evader within 60 s are counted separately (the "of 300" column), not averaged in.
-  Against the joint Evader the Seeker fails to find it at all in 12-15 % of hidden-start episodes.
-- Boundary and collision violations (mean per 60 s episode, visible start):
+### Phase C: Pure self-play (1,500,000 steps)
+Both agents learn jointly, warm-started from Phase B.
+`mix_ppo_evader = mix_frozen_seeker = mix_pool_seeker = mix_pool_evader = 0.0`. No frozen or scripted
+opponents are mixed in. Alternating learner blocks of 20k steps.
 
-| Matchup | Evader wall/obstacle contacts | Seeker wall/obstacle contacts | Evader steps in contact | Seeker steps in contact | Drone-drone collision steps |
-|---|---:|---:|---:|---:|---:|
-| Phase B Seeker vs PPO Evader | 10.3 | 8.4 | 170 | 68 | 2.4 |
-| Joint Seeker vs PPO Evader | 13.0 | 8.5 | 196 | 125 | 1.8 |
-| Joint Seeker vs joint Evader | 13.5 | 14.8 | 262 | 155 | 0.2 |
-| Held-out learned Seeker vs joint Evader | 13.9 | 19.1 | 293 | 127 | 0.2 |
+**Asymmetric actor learning rates** (fix6 key choice): Seeker 3e-4, Evader 2e-3. The Evader is six times
+faster at updating so it can keep pace with a now-competent Seeker after the reward-shaping and observation
+changes below.
 
-  "Contacts" count new contact streaks with a wall or obstacle; "steps in contact" counts every step spent touching.
-  Drone-drone collisions (centres closer than two drone radii, 0.7 m) are measured only; they are not penalised in training.
-  They are rare (under 2.5 steps per episode).
-- Reward convergence: `docs/figures/final2_joint/learning_curves.png` (MADDPG, 5 seeds) and
-  `docs/figures/ppo_city_convergence.png` (PPO plain vs curriculum, 3 seeds). Competing learners oscillate rather than
-  converge monotonically (the PPO curriculum curve starts high because its early stages use an easier Seeker; it is only comparable to plain PPO from the final stage, after about 375k steps, where both sit near 410-430); individual seeds swing between roughly 5 % and 80 % visible time during joint training, and the seed mean ends around 25 %.
+### Reward shaping (fix6)
+- Detection reward: +1 per step to the hidden agent, -1 to the visible agent (unchanged from Stage 1).
+- **Asymmetric boundary penalty** (fix3): Evader -3.5 per contact step, Seeker -2.0 per contact step.
+  Replaces the symmetric 2.0 of the earlier recipe. Kills the wall-hugging exploit the Evader used to
+  break the game at 18.7 % visible.
+- **Seeker proximity bonus** (fix3): `+0.2 / (1 + distance_to_evader)` per step. Gives the Seeker a dense
+  gradient during long hidden stretches instead of a flat -1 per step.
+- Action regulariser 0.05 (training only; evaluation is unshaped).
 
-See also [COMPARISONS.md](COMPARISONS.md) (MAPPO, ablations, opponent pool) and [FUTURE_WORK.md](FUTURE_WORK.md) (physical drones).
+### Observation shaping (fix6)
+- Evader observation: 21-D unchanged (own pos+vel, relative Seeker pos+vel, Seeker camera forward,
+  6 wall distances). With obstacles on, add 9 D for the 3 nearest obstacles.
+- Seeker observation: 33-D base = 21 base + **3 last-known Evader velocity** (fix3,
+  `include_last_known_velocity: true`) + 9 for 3 nearest obstacles. 4-frame history, stacked 5 steps apart,
+  on top. The last-known velocity lets the Seeker dead-reckon through occlusions instead of arriving at the
+  last-known position with no idea where the Evader went next.
 
-## Recipe (`configs/maddpg_config_final.json`, `configs/maddpg_config_final_phaseB.json`)
+### Noise and training horizon
+- Phase B: noise 0.3 -> 0.05 linearly over 300,000 steps, total 400,000 steps.
+- Phase C: noise 0.3 -> 0.1 linearly over 1,100,000 of 1,500,000 steps. The final 400k steps hold a floor
+  of 0.1 instead of annealing to zero, so the agents keep exploring late in training.
 
-1. Phase B: train the Seeker alone against a frozen PPO Evader (400k steps).
-2. Phase C: warm-start from that Seeker, 600k steps of joint training with per-episode opponent mixing:
-   50 % frozen PPO Evader, 25 % frozen learned Seeker (the Phase B Seeker), 25 % self-play, alternating learner
-   blocks of 20k steps.
-3. Seeker observation includes 4 past observations spaced 5 steps apart (`seeker_history`).
-4. Per-step wall/obstacle penalty 2.0 and action regulariser 0.05 (training only; evaluation is unshaped).
+## Baseline -> fix6 journey
 
-## What mattered (seed 2001, 200k steps, evaluated vs held-out PPO)
+| Experiment | Phase C setup                                                 | stage2_joint visible % |
+|------------|---------------------------------------------------------------|------------------------:|
+| baseline   | symmetric wall penalty 2.0, 21-D Seeker obs, equal LRs        |                   18.7 |
+| fix3       | asymm wall 3.5/2.0, +last-known vel, +proximity bonus         |            75.7 +/- 9.3 |
+| fix4       | fix3 minus seeker_visible_bonus / evader_hidden_bonus asymm   |            79.2 +/- 8.9 |
+| fix5       | fix4 with 400k Phase C quick-feedback run                     |             tested only |
+| **fix6**   | fix4 + asymm actor LRs (Evader 6x Seeker), 1.5M Phase C steps |       **46.3 +/- 14.3** |
 
-| Change | Effect |
-|---|---|
-| Per-step wall penalty >= the +1 hidden reward | Removed Seeker corner-parking; 0.5 was not enough |
-| More updates per step, longer training, lower LR, action regulariser alone, warm start alone | No reliable improvement |
-| Seeker observation history (4 x 5 steps) | Dedicated Seeker vs PPO 45 % -> 83 % mean over 3 seeds. Biggest single gain |
-| Opponent mixing + alternating learner blocks | Made joint training keep the Seeker's skill instead of collapsing |
-| Larger wall penalty (3, 5) | Worse Seeker |
+fix3 and fix4 both tilted the game Seeker-ward (75-79 % visible = Seeker dominates). fix6 added the
+asymmetric learning rates so the Evader could catch up, landing at a balanced 46.3 % equilibrium.
+"Balanced" is the design goal: a 50 / 50 equilibrium between an informed Evader and a sensor-restricted
+Seeker is harder to produce than a one-sided win in either direction.
 
-Earlier experiments also tried mixing in the scripted Seeker. That was removed for the final Stage 2 recipe because
-the assignment requires policy-gradient, model-free learning (the scripted controller is a hand-written rule policy);
-the results above were re-run without it.
+## What mattered (ablation summary)
 
-Implementation notes found on the way: a frozen opponent's next action may enter the OTHER agent's critic target but
-never its own critic (doing so made the Evader worse).
+| Change                                             | Effect on fix6 recipe                                                    |
+|----------------------------------------------------|--------------------------------------------------------------------------|
+| Asymmetric wall penalty (Evader 3.5 / Seeker 2.0)  | Killed wall-hugging exploit. Evader boundary steps 420 -> 76-140.        |
+| Last-known Evader velocity in Seeker obs           | Reacq time 3.92 s -> 1.13 s (fix3-5 best); longest hidden 37.2 s -> 10.4 s. |
+| Seeker proximity bonus                             | Gave Seeker a dense gradient during hidden stretches; reliable search.   |
+| Asymmetric actor LRs (Evader 2e-3 / Seeker 3e-4)   | Rebalanced the game from Seeker-dominant 79 % to balanced 46 %.          |
+| Removing opponent mixing (pure self-play Phase C)  | Assignment-compliant, but joint Seeker vs PPO Evader regressed (25.8 %). |
+| Noise floor 0.1 (not 0.05) over 1.1M of 1.5M steps | More exploration late in training; small individual effect.              |
+| Phase C 1.5M steps (vs 600k)                       | More time for self-play to settle; needed alongside the above.           |
+| Per-episode seed = `seed * 1_000_003 + episode`    | Fixed cross-run contamination so independent seeds are truly independent.|
+
+## Comparison with the earlier `maddpg_config_final` recipe
+
+The pre-fix3 `maddpg_config_final.json` recipe is retained in the repo for history. It used symmetric
+wall penalty 2.0, 21-D Seeker observation (no last-known velocity, no proximity bonus), symmetric actor
+LRs 3e-4, 600k Phase C steps, and **per-episode opponent mixing in Phase C** (50 % frozen PPO Evader,
+25 % frozen Phase B Seeker, 25 % self-play). It is NOT the submission recipe. Its headline numbers
+(52.8 / 19.6 / 64.1 / 20.2) are listed in `git log` for the pre-fix3 commits only; do not quote them for
+fix6.
+
+See also [COMPARISONS.md](COMPARISONS.md) (MAPPO, pre-fix3 ablations, opponent pool) and
+[FUTURE_WORK.md](FUTURE_WORK.md) (physical drones).
 
 ## Caveats
 
-- 5 training seeds; seed 2002's Phase B Seeker is weak (18 %) and seed 2004's joint Seeker is weak vs PPO (12 %).
-- The Evader sees the true Seeker state while the Seeker only has a history of detections; the Evader (2.2 m/s) is
-  faster than the Seeker (1.8 m/s).
-- Wall and obstacle contacts remain common for the learned Seeker in some runs; the penalty is a training aid.
-- Evaluation starts are visible by default; `--hidden-start` tests the other case.
+- 3 training seeds. seed 2002's Phase B Seeker is weak; seed-to-seed variance is substantial (std 14 - 34).
+- The Evader sees the true Seeker state while the Seeker only has detections and last-known
+  position/velocity; the Evader (2.2 m/s) is faster than the Seeker (1.8 m/s).
+- Wall and obstacle contacts remain common for the learned Seeker in some runs; the penalty is a
+  training aid, not a hard constraint.
+- Evaluation starts are visible by default; `--hidden-start` tests the other case for first-detection
+  timing.
+- "Balanced" here means approximately 50 / 50 share-of-episode visible; it does not mean the two
+  policies are strategically identical, only that neither one wins the share-of-time game decisively.

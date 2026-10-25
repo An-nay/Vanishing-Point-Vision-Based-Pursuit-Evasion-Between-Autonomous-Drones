@@ -4,9 +4,7 @@ A pursuit-evasion RL project: a drone **Evader** learns to stay out of a **Seeke
 
 - **Phase 1** — built the physics/geometry simulator, a scripted Seeker (TRACK / SCAN / SEARCH), and a random-Evader baseline to sanity-check the environment.
 - **Phase 2** — trained the Evader with PPO, both plainly and with a 4-stage difficulty curriculum, validated across 3 seeds, and added an automated test suite.
-- **Stage 2 (implemented, trained, evaluated)** — PettingZoo two-agent environment, MADDPG with local actors and centralised critics, an optional **obstacle world** (solid boxes that block the Seeker's line of sight), Seeker observation history, and opponent-mixed training. See [Stage 2 documentation](docs/STAGE2.md) and [results](docs/STAGE2_RESULTS.md).
-
-Full write-up, tables, and figures: [`docs/Vanishing_Point_Full_Overview.pdf`](docs/Vanishing_Point_Full_Overview.pdf).
+- **Stage 2 (implemented, trained, evaluated)** — PettingZoo two-agent environment, MADDPG with local actors and centralised critics, an **obstacle world** (solid boxes that block the Seeker's line of sight), Seeker observation history, last-known Evader velocity, and asymmetric reward shaping. The submission recipe is **fix6** (`configs/maddpg_config_fix6*.json`): pure self-play, balanced equilibrium at 46.3 +/- 14.3 % visible across 3 seeds. See [Stage 2 documentation](docs/STAGE2.md) and [results](docs/STAGE2_RESULTS.md).
 
 ## Repo structure
 
@@ -38,15 +36,17 @@ Codes/
 │
 ├── configs/                         # all training configs
 │   ├── maddpg_config.json           #   original Stage 2 defaults
-│   ├── maddpg_config_final*.json    #   final recipe (obstacles, Seeker history, opponent mixing); phaseB = Seeker pretrain
-│   ├── maddpg_config_pool.json      #   opponent-pool variant
+│   ├── maddpg_config_fix6*.json     #   SUBMISSION recipe: pure self-play, asymmetric wall + LRs,
+│   │                                #     last-known velocity, Seeker proximity bonus (46.3+/-14.3)
+│   ├── maddpg_config_final*.json    #   deprecated pre-fix3 recipe (opponent mixing, symmetric wall)
+│   ├── maddpg_config_pool.json      #   opponent-pool variant (tested on the deprecated recipe)
 │   └── mappo_config*.json           #   MAPPO configs
 │
 ├── tests/                           # pytest suite (`pytest -q` from the project root)
 ├── models/                          # trained PPO agents (.zip): open-arena and *_city (obstacle world)
 ├── runs/                            # training / evaluation outputs (git-ignored)
 ├── logs/, logs_city/                # TensorBoard logs
-├── docs/                            # Stage 2 docs, results, full overview PDFs, build_report.py, figures/
+├── docs/                            # Stage 2 docs, results, figures/
 └── archive/                         # Phase 1 prototype (basic_sim_random_evader.py), kept for provenance
 ```
 
@@ -120,7 +120,7 @@ python -m vp.ppo train --obstacles city --timesteps 500000 --seed 2002 --model m
 python -m scripts.train_maddpg --phase validate --episodes 2
 ```
 
-**4. MADDPG: the final recipe (fix6 — balanced self-play, 46.3% +/- 14.3 visible across 3 seeds)**
+**4. MADDPG: the submission recipe (fix6: balanced self-play, 46.3% +/- 14.3 visible across 3 seeds)**
 ```bash
 # Phase B: Seeker alone against a frozen PPO Evader (400k steps, asymmetric wall penalty,
 #          Seeker proximity bonus, last-known Evader velocity in Seeker obs)
@@ -174,11 +174,6 @@ python -m scripts.stability_report --group main runs/C_*/simultaneous_s*
 python -m scripts.ablation_report --prefix runs/ev_ A0_final A1_nohist       # reads runs/ev_<variant>_s<seed>/episodes.csv
 ```
 
-**9. Rebuild the report PDF** (needs `pip install reportlab`; reads the figures in `docs/figures/`)
-```bash
-python docs/build_report.py
-```
-
 The details behind each stage are in [docs/STAGE2.md](docs/STAGE2.md); results are in [docs/STAGE2_RESULTS.md](docs/STAGE2_RESULTS.md) and [docs/COMPARISONS.md](docs/COMPARISONS.md).
 
 ## Usage
@@ -227,7 +222,8 @@ pytest -q
 
 ## Results
 
-Full tables and discussion are in [`docs/Vanishing_Point_Full_Overview.pdf`](docs/Vanishing_Point_Full_Overview.pdf). Headline numbers, evaluated over 20 episodes at full difficulty:
+Stage 2 results are in [`docs/STAGE2_RESULTS.md`](docs/STAGE2_RESULTS.md) and the comparison tables in
+[`docs/COMPARISONS.md`](docs/COMPARISONS.md). Stage 1 headline numbers, evaluated over 20 episodes at full difficulty:
 
 | Setup | Mean return | Undetected time | Wall touches (mean) |
 |---|---|---|---|
@@ -277,12 +273,13 @@ Headless training uses CPU and does not import PyBullet. Add `--render` for play
 python -m vp.ppo train --obstacles city --timesteps 500000 --seed 2001 --model models/ppo_city_plain_s2001
 python -m vp.ppo eval  --obstacles city --model models/ppo_city_plain_s2002 --episodes 50
 
-# Final Stage 2 recipe: Seeker pretrain (frozen PPO opponent) then mixed joint training
-python -m scripts.train_maddpg --phase seeker --config configs/maddpg_config_final_phaseB.json --opponent ppo --opponent-model models/ppo_city_plain_s2001.zip --output runs/B
-python -m scripts.train_maddpg --phase simultaneous --config configs/maddpg_config_final.json --initialize runs/B/seeker_s2001/final.pt --output runs/C --seeds 2001
+# Submission Stage 2 recipe (fix6): Seeker pretrain (frozen PPO opponent) then pure MADDPG self-play
+python -m scripts.train_maddpg --phase seeker --config configs/maddpg_config_fix6_phaseB.json --opponent ppo --opponent-model models/ppo_city_plain_s2001.zip --output runs/B
+python -m scripts.train_maddpg --phase simultaneous --config configs/maddpg_config_fix6.json --initialize runs/B/seeker_s2001/final.pt --output runs/C --seeds 2001
 
-# Evaluate (60 paired starts, unshaped rewards, bootstrap CIs) and watch
+# Evaluate (unshaped rewards, mean +/- std across 3 seeds via multiseed_report.py) and watch
 python -m scripts.evaluate_stage2 --ppo-model models/ppo_city_plain_s2002.zip --seeker-checkpoint runs/B/seeker_s2001/final.pt --joint-checkpoint runs/C/simultaneous_s2001/final.pt --output runs/eval
+python -m scripts.multiseed_report --prefix runs/fix6_train --seeds 2001 2002 2003
 python -m scripts.view2d --matchup joint --obstacles city --joint-checkpoint runs/C/simultaneous_s2001/final.pt --out runs/joint.gif   # 2D top-down + side view
 python -m scripts.replay_stage2 --joint-checkpoint runs/C/simultaneous_s2001/final.pt                                                                  # PyBullet 3D window
 ```
@@ -290,5 +287,5 @@ python -m scripts.replay_stage2 --joint-checkpoint runs/C/simultaneous_s2001/fin
 ## Figures and metrics
 
 - `docs/figures/ppo_city_convergence.png`: PPO reward convergence, plain vs curriculum (obstacle world, 3 seeds).
-- `docs/figures/final2_joint/learning_curves.png`: MADDPG joint-training curves (5 seeds).
+- `docs/figures/fix6/`: fix6 MADDPG convergence and evaluation plots (3 seeds).
 - Time-to-first-detection (use `--hidden-start`), drone-drone collision steps, wall/obstacle contacts and bootstrap CIs are in each evaluation's `comparison.md`; see [docs/STAGE2_RESULTS.md](docs/STAGE2_RESULTS.md).
