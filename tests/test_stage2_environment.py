@@ -1,17 +1,16 @@
-"""Phase A: world correctness, information restrictions and API contract."""
 import math
 import numpy as np
 import pytest
 from pettingzoo.test import parallel_api_test
-from vp.core import Simulator, DT, SEEKER_SPEED, EVADER_SPEED, is_visible
-from vp.parallel import VanishingPointParallelEnv
+from vp.core import Simulator, DT, SEEKER_SPEED, EVADER_SPEED, can_see
+from vp.parallel import DroneEnv
 
 START = {"seeker_pos": [4., 10., 5.], "evader_pos": [12., 10., 5.],
          "seeker_forward": [1., 0., 0.]}
 
 
 def make_env(**kwargs):
-    env = VanishingPointParallelEnv(randomize_start=False, **kwargs)
+    env = DroneEnv(randomize_start=False, **kwargs)
     env.reset(seed=7)
     return env
 
@@ -22,7 +21,7 @@ def actions(seeker=None, evader=None):
 
 
 def test_parallel_api():
-    parallel_api_test(VanishingPointParallelEnv(episode_steps=15), num_cycles=35)
+    parallel_api_test(DroneEnv(episode_steps=15), num_cycles=35)
 
 
 def test_joint_motion_and_speed_limits():
@@ -47,17 +46,17 @@ def test_camera_rates_wrapping_and_pitch_limit():
 
 
 def test_shared_fov_range_and_vertical_geometry():
-    assert is_visible([0, 0, 0], [0, 0, 1], [0, 0, 5])[0]
-    assert not is_visible([0, 0, 0], [1, 0, 0], [0, 0, 5])[0]
-    assert not is_visible([0, 0, 0], [1, 0, 0], [10.01, 0, 0])[0]
+    assert can_see([0, 0, 0], [0, 0, 1], [0, 0, 5])[0]
+    assert not can_see([0, 0, 0], [1, 0, 0], [0, 0, 5])[0]
+    assert not can_see([0, 0, 0], [1, 0, 0], [10.01, 0, 0])[0]
     direction = [math.cos(math.radians(44)), math.sin(math.radians(44)), 0]
-    assert is_visible([0, 0, 0], [1, 0, 0], np.array(direction) * 5)[0]
+    assert can_see([0, 0, 0], [1, 0, 0], np.array(direction) * 5)[0]
 
 
 def test_hidden_evader_cannot_change_seeker_observation_or_info():
     env = make_env()
     env.sim.set_camera_forward([-1., 0., 0.])
-    env.step(actions())  # lose sight; memory still contains the visible reset position
+    env.step(actions())
     observation = env.sim.seeker_observation().copy()
     info = env._infos({"seeker": False, "evader": False})["seeker"]
     np.testing.assert_allclose(observation[16:19], [8 / 20, 0, 0])
@@ -87,7 +86,7 @@ def test_independent_wall_penalty_and_reentry():
     assert rewards == {"seeker": -1., "evader": -1.}
     _, rewards, _, _, _ = env.step(actions(evader=[1, 0, 0]))
     assert rewards["evader"] == 1. and env.sim.wall_touches == 1
-    env.step(actions(evader=[-1, 0, 0]))  # actual leave and re-entry, no flag edits
+    env.step(actions(evader=[-1, 0, 0]))
     env.step(actions(evader=[1, 0, 0]))
     assert env.sim.wall_touches == 2 and env.sim.seeker_wall_touches == 0
 
@@ -116,7 +115,7 @@ def test_detection_does_not_terminate_and_final_observations_are_returned():
 
 
 def test_reset_reproducibility_clears_statistics_and_memory():
-    env = VanishingPointParallelEnv()
+    env = DroneEnv()
     first, _ = env.reset(seed=32)
     state = env.state().copy()
     env.step(actions(evader=[1, 0, 0]))
@@ -141,7 +140,7 @@ def test_invalid_joint_actions_are_atomic(bad):
 
 
 def test_observation_dimensions_spaces_and_random_rollout():
-    env = VanishingPointParallelEnv()
+    env = DroneEnv()
     for seed in [20, 21]:
         obs, _ = env.reset(seed=seed)
         while env.agents:
@@ -167,9 +166,9 @@ def test_reacquisition_tracks_hidden_streaks():
 
 
 def test_stage1_and_parallel_scripted_rollouts_match():
-    from vp.ppo import VanishingPointEnv
-    stage1 = VanishingPointEnv()
-    stage2 = VanishingPointParallelEnv()
+    from vp.ppo import PPOEnv
+    stage1 = PPOEnv()
+    stage2 = DroneEnv()
     rng = np.random.default_rng(18)
     for seed in [18, 29]:
         old_obs, _ = stage1.reset(seed=seed)
@@ -187,13 +186,12 @@ def test_stage1_and_parallel_scripted_rollouts_match():
 
 def test_renderer_uses_shared_world_and_releases_clients(monkeypatch):
     import pybullet as bullet
-    from vp.ppo import VanishingPointEnv
+    from vp.ppo import PPOEnv
     original_connect = bullet.connect
     monkeypatch.setattr(bullet, "connect", lambda mode: original_connect(bullet.DIRECT))
-    # Exercise the actual renderer without opening GUI windows or waiting for playback.
     monkeypatch.setattr("vp.parallel.time.sleep", lambda seconds: None)
-    stage1 = VanishingPointEnv(render_mode="human", randomize_start=False)
-    stage2 = VanishingPointParallelEnv(render_mode="human", randomize_start=False)
+    stage1 = PPOEnv(render_mode="human", randomize_start=False)
+    stage2 = DroneEnv(render_mode="human", randomize_start=False)
     try:
         stage1.reset(seed=4)
         stage2.reset(seed=4)

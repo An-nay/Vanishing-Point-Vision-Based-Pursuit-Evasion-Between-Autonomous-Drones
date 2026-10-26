@@ -1,13 +1,3 @@
-"""Aggregate evaluate_stage2 outputs of several variants x seeds into one comparison table.
-
-    python -m scripts.ablation_report --prefix runs/ev_ A0_final A2_nowall ...   # reads runs/ev_<variant>_s<seed>/episodes.csv
-
-Columns (each = mean over seeds, with the standard deviation ACROSS seeds, so seed-to-seed stability is visible):
-  Seeker vs PPO       Evader visible %, joint-trained Seeker vs the held-out PPO Evader (higher = stronger Seeker)
-  Evader vs held-out  Evader visible %, joint-trained Evader vs held-out learned Seekers (lower = stronger Evader)
-  Joint game          Evader visible % when the two co-trained agents meet (balance; far from 0/100 is healthy)
-  Contact steps       Steps per episode in contact with a wall/obstacle, Evader / Seeker (joint game)
-"""
 import argparse
 import csv
 import glob

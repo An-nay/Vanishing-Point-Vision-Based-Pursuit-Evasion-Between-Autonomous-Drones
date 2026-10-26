@@ -1,9 +1,8 @@
-"""Load any Stage 2 checkpoint (MADDPG or MAPPO) behind one interface: act / obs_dims / action_dims / config."""
 from pathlib import Path
 import torch
 
 
-def load_policy(path, device="cpu"):
+def load_net(path, device="cpu"):
     path = Path(path)
     if path.suffix != ".pt" or not path.is_file():
         raise FileNotFoundError(f"checkpoint not found: {path}")

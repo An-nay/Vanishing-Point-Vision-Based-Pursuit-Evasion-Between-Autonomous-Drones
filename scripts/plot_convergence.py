@@ -1,16 +1,3 @@
-"""
-Plot PPO reward convergence from TensorBoard logs.
-
-Usage (from the project root):
-
-    python -m scripts.plot_convergence --plain logs/PPO_1 --curriculum logs/PPO_3 --out docs/figures/convergence.png
-    python -m scripts.plot_convergence --plain A/PPO_1 B/PPO_1 C/PPO_1 --curriculum D/PPO_1 E/PPO_1 F/PPO_1   # several seeds: mean + min-max band
-
-Each training run creates its own PPO_N subfolder inside the --tensorboard-log directory. Give EVERY run its own
---tensorboard-log folder: runs started at the same time that share one folder race for the PPO_N names and
-interleave their logs (this corrupted logs_city/PPO_1..5).
-"""
-
 import argparse
 import matplotlib
 matplotlib.use("Agg")
@@ -33,7 +20,6 @@ def load_curve(log_dir, tag="rollout/ep_rew_mean"):
 
 
 def mean_band(runs, grid):
-    """Interpolate each run onto a common step grid -> (mean, min, max)."""
     curves = np.array([np.interp(grid, steps, values) for steps, values in runs])
     return curves.mean(axis=0), curves.min(axis=0), curves.max(axis=0)
 

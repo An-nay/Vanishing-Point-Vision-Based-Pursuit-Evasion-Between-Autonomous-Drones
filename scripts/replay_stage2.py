@@ -1,11 +1,10 @@
-"""Replay trained MADDPG checkpoints in the PyBullet GUI (one episode per matchup)."""
 import argparse
 import tempfile
 from pathlib import Path
 import numpy as np
-from vp.core import sample_initial_state
-from vp.policy_io import load_policy
-from vp.opponents import PPOEvader
+from vp.core import rand_start
+from vp.policy_io import load_net
+from vp.opponents import PPOOpp
 from scripts.evaluate_stage2 import evaluate_matchup
 from vp.paths import MODELS
 
@@ -21,16 +20,16 @@ def main():
     parser.add_argument("--seed", type=int, default=10001)
     args = parser.parse_args()
 
-    joint = load_policy(args.joint_checkpoint)
-    seeker_net = load_policy(args.seeker_checkpoint) if args.seeker_checkpoint else joint
-    ppo = PPOEvader(args.ppo_model)
+    joint = load_net(args.joint_checkpoint)
+    seeker_net = load_net(args.seeker_checkpoint) if args.seeker_checkpoint else joint
+    ppo = PPOOpp(args.ppo_model)
     options = joint.config["environment"].copy()
     table = {
         "stage1_baseline": (None, ppo.act),
         "learned_seeker_ppo": (lambda o: seeker_net.act("seeker", o), ppo.act),
         "stage2_joint": (lambda o: joint.act("seeker", o), lambda o: joint.act("evader", o)),
     }
-    seeker, evader, forward = sample_initial_state(
+    seeker, evader, forward = rand_start(
         np.random.default_rng(args.seed), obstacles=options.get("obstacles"))
     start = {"seeker_pos": seeker.tolist(), "evader_pos": evader.tolist(),
              "seeker_forward": forward.tolist()}

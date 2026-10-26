@@ -1,11 +1,3 @@
-"""Maze viewer: score strip, top-down field, and a side view of building heights.
-
-    python -m scripts.view2d --obstacles city --matchup joint \
-        --joint-checkpoint runs/fixed_long_s2004/simultaneous_s2004/final.pt --out runs/joint.gif
-
-Needs no PyBullet. Stage 2 matchups (all learned): joint, seeker_ppo.
-Stage 1 reference only (scripted Seeker): scripted_random, scripted_ppo, scripted_joint.
-"""
 import argparse
 import math
 from pathlib import Path
@@ -15,8 +7,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.path import Path as MplPath
 from matplotlib.patches import FancyBboxPatch, Circle, Rectangle
-from vp.core import (ARENA_X, ARENA_Y, ARENA_Z, DT, CITY_LIGHTS, CITY_TREES, segment_blocked)
-from vp.parallel import VanishingPointParallelEnv
+from vp.core import (ARENA_X, ARENA_Y, ARENA_Z, DT, LAMPS, TREES, ray_hits)
+from vp.parallel import DroneEnv
 from vp.paths import MODELS, RUNS
 
 INK = "#000000"
@@ -29,7 +21,7 @@ SEEKER, EVADER, AMBER = "#ff3b30", "#3dff9a", "#ffb000"
 LAMP, CANOPY, TRUNK = "#ffe08a", "#1c7a48", "#6a5040"
 
 
-def _wall_colour(height):
+def box_color(height):
     lift = float(np.clip(height / ARENA_Z, 0, 1))
     dark = np.array([0.08, 0.08, 0.55])
     light = np.array([0.45, 0.55, 1.0])
@@ -37,8 +29,7 @@ def _wall_colour(height):
     return tuple(rgb)
 
 
-def _streets(ax):
-    """Lane lines and crossings. Buildings are drawn over them."""
+def draw_roads(ax):
     road, cross = "#1c1c2c", "#34344a"
     for y in (5.2, 13.8):
         ax.plot([0.3, ARENA_X - 0.3], [y, y], color=road, lw=1.15, zorder=0, solid_capstyle="butt")
@@ -50,35 +41,34 @@ def _streets(ax):
             ax.plot([x, x], [y - 0.85, y + 0.85], color=cross, lw=2.4, zorder=0, solid_capstyle="butt")
 
 
-def _masts(obstacles):
+def tower_tops(obstacles):
     return [((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, float(hi[2]))
             for lo, hi in obstacles if hi[2] >= 9.5]
 
 
-def _dressing(ax, obstacles):
-    for x, y in CITY_LIGHTS:
+def draw_bits(ax, obstacles):
+    for x, y in LAMPS:
         ax.plot([x, x], [y - 0.32, y + 0.32], color=LAMP, lw=0.8, zorder=3, solid_capstyle="round")
         ax.add_patch(Circle((x, y), 0.16, facecolor=LAMP, edgecolor="none", lw=0, zorder=4))
-    for x, y in CITY_TREES:
+    for x, y in TREES:
         ax.add_patch(Circle((x, y), 0.58, facecolor=CANOPY, edgecolor="#0e3d24", lw=0.5, zorder=3))
         ax.add_patch(Circle((x, y), 0.11, facecolor=TRUNK, edgecolor="none", lw=0, zorder=4))
-    for x, y, _height in _masts(obstacles):
+    for x, y, _height in tower_tops(obstacles):
         ax.plot([x, x], [y - 0.15, y + 0.55], color="#d5d8ee", lw=0.9, zorder=6, solid_capstyle="round")
 
 
-def _dressing_side(ax, obstacles):
-    for x, _y in CITY_TREES:
+def draw_side_bits(ax, obstacles):
+    for x, _y in TREES:
         ax.plot([x, x], [0.0, 1.15], color=TRUNK, lw=1.3, zorder=3, solid_capstyle="round")
         ax.add_patch(Circle((x, 1.45), 0.42, facecolor=CANOPY, edgecolor="none", lw=0, zorder=3))
-    for x, _y in CITY_LIGHTS:
+    for x, _y in LAMPS:
         ax.plot([x, x], [0.0, 1.05], color="#8a8478", lw=0.8, zorder=3, solid_capstyle="round")
         ax.add_patch(Circle((x, 1.14), 0.12, facecolor=LAMP, edgecolor="none", lw=0, zorder=4))
-    for x, _y, height in _masts(obstacles):
+    for x, _y, height in tower_tops(obstacles):
         ax.plot([x, x], [height, min(height + 0.75, ARENA_Z + 0.55)], color="#d5d8ee", lw=0.9, zorder=4)
 
 
-def _pellets(obstacles):
-    """One dot per metre of open floor, kept off the building faces."""
+def dots(obstacles):
     spots = []
     for x in np.arange(1.0, ARENA_X, 1.0):
         for y in np.arange(1.0, ARENA_Y, 1.0):
@@ -89,7 +79,7 @@ def _pellets(obstacles):
     return spots
 
 
-def _arena_reach(origin, direction, reach):
+def ray_len(origin, direction, reach):
     limits = [reach]
     for axis, bound in ((0, 0.0), (0, ARENA_X), (1, 0.0), (1, ARENA_Y)):
         if abs(direction[axis]) < 1e-8:
@@ -100,8 +90,7 @@ def _arena_reach(origin, direction, reach):
     return min(limits)
 
 
-def _view_polygon(sim, rays=28):
-    """Top-down wedge. Stops at a wall footprint and at the arena edge."""
+def cone(sim, rays=28):
     forward = sim.camera_forward
     yaw0 = math.atan2(forward[1], forward[0])
     half = math.radians(sim.fov_deg / 2)
@@ -114,14 +103,14 @@ def _view_polygon(sim, rays=28):
     for offset in np.linspace(-half, half, rays):
         yaw = yaw0 + offset
         direction = np.array([math.cos(yaw), math.sin(yaw)])
-        reach = _arena_reach(origin, direction, sim.detection_range)
+        reach = ray_len(origin, direction, sim.detection_range)
         end = np.array([origin[0], origin[1], 0.0]) + np.array([direction[0], direction[1], 0.0]) * reach
         start = np.array([origin[0], origin[1], 0.0])
-        if segment_blocked(start, end, flat):
+        if ray_hits(start, end, flat):
             low, high = 0.0, reach
             for _ in range(14):
                 mid = (low + high) / 2
-                if segment_blocked(start, start + np.array([direction[0], direction[1], 0.0]) * mid, flat):
+                if ray_hits(start, start + np.array([direction[0], direction[1], 0.0]) * mid, flat):
                     high = mid
                 else:
                     low = mid
@@ -130,22 +119,21 @@ def _view_polygon(sim, rays=28):
     return np.array(points)
 
 
-def _stop_at_wall(sim):
-    """Point where the seeker-evader line meets the first blocking box."""
+def stop_at_box(sim):
     start, end = sim.seeker_pos, sim.evader_pos
-    if not segment_blocked(start, end, sim.obstacles):
+    if not ray_hits(start, end, sim.obstacles):
         return end[:2]
     low, high = 0.0, 1.0
     for _ in range(16):
         mid = (low + high) / 2
-        if segment_blocked(start, start + (end - start) * mid, sim.obstacles):
+        if ray_hits(start, start + (end - start) * mid, sim.obstacles):
             high = mid
         else:
             low = mid
     return (start + (end - start) * low)[:2]
 
 
-def _drone(ax, xy, heading, colour, locked=False):
+def draw_drone(ax, xy, heading, colour, locked=False):
     forward = np.array([math.cos(heading), math.sin(heading)])
     right = np.array([-forward[1], forward[0]])
     reach = 0.62
@@ -158,12 +146,12 @@ def _drone(ax, xy, heading, colour, locked=False):
     ax.plot([xy[0], nose[0]], [xy[1], nose[1]], color="white", lw=1.8, zorder=10, solid_capstyle="round")
 
 
-def _metric(ax, x, value, label):
+def put_num(ax, x, value, label):
     ax.text(x, 0.34, value, color=TEXT, fontsize=11, ha="center", va="center", fontfamily="monospace")
     ax.text(x, 0.12, label, color=DIM, fontsize=6.5, ha="center", va="center", fontfamily="monospace")
 
 
-def _strip(ax, sim, env, state, blocked):
+def draw_bar(ax, sim, env, state, blocked):
     ax.set_facecolor(INK)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
@@ -195,11 +183,10 @@ def _strip(ax, sim, env, state, blocked):
         (f"{sim.step_count}", "STEP"),
     ]
     for index, (value, label) in enumerate(columns):
-        _metric(ax, (index + 0.5) / len(columns), value, label)
+        put_num(ax, (index + 0.5) / len(columns), value, label)
 
 
-def _side(ax, sim):
-    """Whole arena from the side: width along x, height in metres."""
+def draw_side(ax, sim):
     ax.set_facecolor(INK)
     ax.set_xlim(-0.4, ARENA_X + 0.4)
     ax.set_ylim(-0.5, ARENA_Z + 0.8)
@@ -212,13 +199,13 @@ def _side(ax, sim):
     ax.axhline(0.06, color=WALL, lw=1.0)
     for lo, hi in sorted(sim.obstacles, key=lambda box: float(box[1][2]), reverse=True):
         ax.add_patch(Rectangle((lo[0], lo[2]), hi[0] - lo[0], hi[2] - lo[2],
-                               facecolor=_wall_colour(hi[2]), edgecolor=WALL_EDGE, lw=0.6, zorder=2))
+                               facecolor=box_color(hi[2]), edgecolor=WALL_EDGE, lw=0.6, zorder=2))
     colour = EVADER if sim.visible else DIM
     ax.plot([sim.seeker_pos[0], sim.evader_pos[0]], [sim.seeker_pos[2], sim.evader_pos[2]],
             color=colour, lw=1.2, zorder=3)
     ax.scatter([sim.seeker_pos[0]], [sim.seeker_pos[2]], s=36, c=SEEKER, edgecolors="white", linewidths=0.5, zorder=4)
     ax.scatter([sim.evader_pos[0]], [sim.evader_pos[2]], s=36, c=EVADER, edgecolors="white", linewidths=0.5, zorder=4)
-    _dressing_side(ax, sim.obstacles)
+    draw_side_bits(ax, sim.obstacles)
     ax.text(0.3, ARENA_Z - 0.2, "SIDE", color=DIM, fontsize=8, fontfamily="monospace", va="top")
 
 
@@ -239,9 +226,9 @@ def draw_frame(fig, env, state):
         maze.add_patch(Rectangle((-0.15, -0.15), ARENA_X + 0.3, ARENA_Y + 0.3, fill=False, edgecolor="white", lw=2.4, zorder=12))
     maze.add_patch(Rectangle((0, 0), ARENA_X, ARENA_Y, fill=False, edgecolor=WALL, lw=2.6, zorder=4))
     maze.text(0.35, ARENA_Y - 0.25, "TOP", color=DIM, fontsize=8, fontfamily="monospace", va="top")
-    _streets(maze)
+    draw_roads(maze)
 
-    cone = _view_polygon(sim)
+    cone = cone(sim)
     cone_colour = SEEKER if sim.visible else AMBER
     maze.plot([cone[0, 0], cone[1, 0]], [cone[0, 1], cone[1, 1]], color=cone_colour, lw=1.25, zorder=1, solid_capstyle="round")
     maze.plot([cone[0, 0], cone[-1, 0]], [cone[0, 1], cone[-1, 1]], color=cone_colour, lw=1.25, zorder=1, solid_capstyle="round")
@@ -257,8 +244,8 @@ def draw_frame(fig, env, state):
                                      edgecolor="#9aa6ff", lw=1.8, zorder=4))
         pad = min(0.22, width * 0.18, depth * 0.18)
         maze.add_patch(Rectangle((lo[0] + pad, lo[1] + pad), width - 2 * pad, depth - 2 * pad,
-                                 facecolor=_wall_colour(hi[2]), lw=0, zorder=5))
-    _dressing(maze, sim.obstacles)
+                                 facecolor=box_color(hi[2]), lw=0, zorder=5))
+    draw_bits(maze, sim.obstacles)
 
     for name, colour in (("seeker", SEEKER), ("evader", EVADER)):
         trail = np.array(state["trail"][name][-16:])
@@ -270,39 +257,39 @@ def draw_frame(fig, env, state):
     if sim.visible:
         maze.plot(*zip(sim.seeker_pos[:2], sim.evader_pos[:2]), color=EVADER, lw=1.6, zorder=6)
     elif blocked:
-        stop = _stop_at_wall(sim)
+        stop = stop_at_box(sim)
         maze.plot(*zip(sim.seeker_pos[:2], stop), color=AMBER, lw=1.5, ls=(0, (3, 2)), zorder=6)
 
     seeker_heading = math.atan2(sim.camera_forward[1], sim.camera_forward[0])
     velocity = sim.evader_velocity
     if np.hypot(velocity[0], velocity[1]) > 0.1:
         state["evader_heading"] = math.atan2(velocity[1], velocity[0])
-    _drone(maze, sim.seeker_pos[:2], seeker_heading, SEEKER, locked=sim.visible)
-    _drone(maze, sim.evader_pos[:2], state["evader_heading"], EVADER)
-    _strip(strip, sim, env, state, blocked)
-    _side(side, sim)
+    draw_drone(maze, sim.seeker_pos[:2], seeker_heading, SEEKER, locked=sim.visible)
+    draw_drone(maze, sim.evader_pos[:2], state["evader_heading"], EVADER)
+    draw_bar(strip, sim, env, state, blocked)
+    draw_side(side, sim)
     fig.canvas.draw()
     return np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
 
 
 def build_policies(matchup, joint_path, seeker_path, ppo_path, seed):
-    from vp.policy_io import load_policy
-    from vp.opponents import PPOEvader, RandomEvader
-    joint = load_policy(joint_path) if joint_path else None
+    from vp.policy_io import load_net
+    from vp.opponents import PPOOpp, RandEvader
+    joint = load_net(joint_path) if joint_path else None
     if matchup in ("scripted_joint", "joint") and joint is None:
         raise SystemExit("--joint-checkpoint is required for this matchup")
     if matchup == "scripted_random":
-        return None, RandomEvader(seed).act, "scripted Seeker vs random Evader"
+        return None, RandEvader(seed).act, "scripted Seeker vs random Evader"
     if matchup == "scripted_ppo":
-        return None, PPOEvader(ppo_path).act, "scripted Seeker vs PPO Evader"
+        return None, PPOOpp(ppo_path).act, "scripted Seeker vs PPO Evader"
     if matchup == "scripted_joint":
         return None, (lambda o: joint.act("evader", o)), "scripted Seeker vs MADDPG Evader"
     if matchup == "joint":
         return (lambda o: joint.act("seeker", o)), (lambda o: joint.act("evader", o)), "MADDPG vs MADDPG"
-    seeker_net = load_policy(seeker_path) if seeker_path else joint
+    seeker_net = load_net(seeker_path) if seeker_path else joint
     if seeker_net is None:
         raise SystemExit("--seeker-checkpoint or --joint-checkpoint required")
-    return (lambda o: seeker_net.act("seeker", o)), PPOEvader(ppo_path).act, "MADDPG Seeker vs PPO Evader"
+    return (lambda o: seeker_net.act("seeker", o)), PPOOpp(ppo_path).act, "MADDPG Seeker vs PPO Evader"
 
 
 def main():
@@ -321,13 +308,13 @@ def main():
 
     options = {"obstacles": None if args.obstacles == "none" else args.obstacles}
     if args.joint_checkpoint:
-        from vp.policy_io import load_policy
-        options = {**load_policy(args.joint_checkpoint).config["environment"], **options}
-    env = VanishingPointParallelEnv(**options)
+        from vp.policy_io import load_net
+        options = {**load_net(args.joint_checkpoint).config["environment"], **options}
+    env = DroneEnv(**options)
     seeker, evader, _subtitle = build_policies(args.matchup, args.joint_checkpoint, args.seeker_checkpoint,
                                               args.ppo_model, args.seed)
     obs, _ = env.reset(seed=args.seed)
-    pellets = np.asarray(_pellets(env.sim.obstacles), dtype=float)
+    pellets = np.asarray(dots(env.sim.obstacles), dtype=float)
     if len(pellets) == 0:
         pellets = np.zeros((0, 2))
     state = {"trail": {"seeker": [], "evader": []}, "evader_heading": 0.0,
@@ -359,7 +346,7 @@ def main():
     from PIL import Image
     args.out.parent.mkdir(parents=True, exist_ok=True)
     images = [Image.fromarray(frame) for frame in frames]
-    if args.out.suffix != ".png":  # small GIFs: 64-colour adaptive palette
+    if args.out.suffix != ".png":
         images = [im.convert("P", palette=Image.ADAPTIVE, colors=128) for im in images]
     if args.out.suffix == ".png":
         images[len(images) // 2].save(args.out)

@@ -1,20 +1,11 @@
-"""MAPPO training: Phase B (Seeker vs frozen PPO Evader) and joint training with opponent mixing.
-
-    python -m scripts.train_mappo --phase seeker --opponent-model models/ppo_city_plain_s2001.zip --output runs/mappo_B --seeds 2001
-    python -m scripts.train_mappo --phase simultaneous --initialize runs/mappo_B/seeker_s2001/final.pt --output runs/mappo_C --seeds 2001
-
-Same environment, observations, opponent mixing, alternating blocks and evaluation as the MADDPG recipe.
-Steps where an agent's action came from a frozen opponent are masked out of that agent's PPO loss
-(PPO is on-policy, so it may only learn from its own actions).
-"""
 import argparse
 import csv
 import json
 from pathlib import Path
 import numpy as np
-from vp.parallel import VanishingPointParallelEnv, AGENTS
+from vp.parallel import DroneEnv, AGENTS
 from vp.mappo import MAPPO, load_mappo_config, gae, DEFAULT_MAPPO_CONFIG
-from vp.opponents import make_evader, CheckpointOpponent
+from vp.opponents import make_opp, SavedNet
 from scripts.train_maddpg import EPISODE_FIELDS, UPDATE_FIELDS, episode_seed, choose_mode
 from vp.paths import RUNS
 
@@ -24,11 +15,11 @@ def train(config, phase, output, opponent_model=None, initialize=None):
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"output directory is not empty: {output}; choose a new run directory")
     output.mkdir(parents=True, exist_ok=True)
-    env = VanishingPointParallelEnv(**config["environment"])
+    env = DroneEnv(**config["environment"])
     obs_dims = {a: env.observation_space(a).shape[0] for a in AGENTS}
     action_dims = {a: env.action_space(a).shape[0] for a in AGENTS}
     learner = MAPPO(obs_dims, action_dims, env.state_space.shape[0], config)
-    if initialize:  # warm start: the pretrained Seeker (actor and critic); the Evader starts fresh
+    if initialize:
         prior = MAPPO.load(initialize)
         if prior.obs_dims != obs_dims or prior.state_dim != learner.state_dim:
             raise ValueError("initial checkpoint spaces do not match this environment")
@@ -36,12 +27,12 @@ def train(config, phase, output, opponent_model=None, initialize=None):
         learner.critics["seeker"].load_state_dict(prior.critics["seeker"].state_dict())
     ppo_opponent = None
     if phase == "seeker" or config.get("mix_ppo_evader", 0.0) > 0:
-        ppo_opponent = make_evader("ppo", config["seed"], opponent_model or config.get("mix_ppo_model"))
+        ppo_opponent = make_opp("ppo", config["seed"], opponent_model or config.get("mix_ppo_model"))
     seeker_opponent = None
     if phase == "simultaneous" and config.get("mix_frozen_seeker", 0.0) > 0:
         if not initialize:
             raise ValueError("mix_frozen_seeker needs --initialize: the pretrained Seeker is the frozen opponent")
-        seeker_opponent = CheckpointOpponent(initialize, "seeker")
+        seeker_opponent = SavedNet(initialize, "seeker")
     active_all = ("seeker",) if phase == "seeker" else AGENTS
     (output / "run.json").write_text(json.dumps(
         {"algo": "mappo", "phase": phase, "config": config, "initialize": str(initialize) if initialize else None},
@@ -80,7 +71,7 @@ def train(config, phase, output, opponent_model=None, initialize=None):
                     buf["logp"].append(logp); buf["val"].append(learner.value(agent, state))
                     buf["valid"].append(0.0 if frozen else 1.0)
                 obs, rewards, terms, truncs, _ = env.step(actions)
-                done = not env.agents  # time limit: bootstrap from the final state, never from the reset state
+                done = not env.agents
                 final_state = env.state().copy()
                 for agent in AGENTS:
                     reward = rewards[agent] * scale
@@ -100,7 +91,6 @@ def train(config, phase, output, opponent_model=None, initialize=None):
                     episode += 1
                     obs, _ = env.reset(seed=episode_seed(config["seed"], episode))
                     mode = "ppo_evader" if phase == "seeker" else choose_mode(config, rng, phase)
-            # ---- learn from this rollout ----
             block = config.get("alternate_every", 0)
             if block and phase == "simultaneous":
                 pattern = config.get("alternate_pattern") or list(AGENTS)

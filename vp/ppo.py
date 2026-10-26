@@ -1,17 +1,3 @@
-"""
-Vanishing Point - Phase 1 PPO Evader
-
-- Scripted Seeker with TRACK / SCAN / SEARCH modes
-- PPO-controlled Evader
-- Bounded 3D arena
-- Geometric FOV detection
-- Visibility-based reward
-- One-time wall-contact penalty
-- Randomized, reproducible episode starts
-
-Training is headless and lightweight. PyBullet is used only for human rendering.
-"""
-
 import argparse
 import math
 import os
@@ -26,13 +12,12 @@ from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 
 
-from vp.core import *  # Preserve public Stage 1 constants/helpers.
-from vp.render import RendererMixin
+from vp.core import *
+from vp.render import Drawer
 from vp.paths import MODELS
 
 
-class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
-    """Stage 1 PPO interface; scripted policy and saved observations remain compatible."""
+class PPOEnv(gym.Env, Simulator, Drawer):
 
     metadata = {"render_modes": ["human"], "render_fps": int(1 / DT)}
 
@@ -43,16 +28,14 @@ class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
             raise ValueError("render_mode must be None or 'human'")
         self.render_mode = render_mode
         self.action_space = spaces.Box(-1.0, 1.0, shape=(3,), dtype=np.float32)
-        self.obs_dim = 21 + int(INCLUDE_VISIBILITY_IN_OBS) + self.obs_extra
+        self.obs_dim = 21 + int(SHOW_SEEN) + self.obs_extra
         self.observation_space = spaces.Box(-1.0, 1.0, shape=(self.obs_dim,), dtype=np.float32)
         self.physics_client = self.seeker_id = self.evader_id = None
         self.seeker_policy = None
         if render_mode == "human":
             self._init_renderer()
 
-    # ---------- difficulty control ----------
     def set_params(self, seeker_speed=None, fov_deg=None, detection_range=None):
-        """Override Seeker speed, camera FOV and detection range. None keeps the current value."""
         if seeker_speed is not None:
             self.seeker_speed = float(seeker_speed)
         if fov_deg is not None:
@@ -61,7 +44,6 @@ class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
             self.detection_range = float(detection_range)
 
     def set_difficulty(self, level):
-        """0.0 = easy Seeker, 1.0 = full difficulty (the constants at the top)."""
         level = float(np.clip(level, 0.0, 1.0))
         self.set_params(
             seeker_speed=EASY_SEEKER_SPEED + level * (SEEKER_SPEED - EASY_SEEKER_SPEED),
@@ -78,29 +60,29 @@ class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
         )
 
     def _check_visibility(self):
-        visible, distance, angle = is_visible(
+        visible, distance, angle = can_see(
             self.seeker_pos,
             self.seeker_policy.forward,
             self.evader_pos,
             self.fov_deg,
             self.detection_range,
         )
-        if visible and segment_blocked(self.seeker_pos, self.evader_pos, self.obstacles):
-            visible = False  # obstacles block the line of sight
+        if visible and ray_hits(self.seeker_pos, self.evader_pos, self.obstacles):
+            visible = False
         return visible, distance, angle
 
 
     def close(self):
-        RendererMixin.close(self)
+        Drawer.close(self)
 
     def _sample_initial_state(self):
-        return sample_initial_state(self.np_random, self.randomize_start,
+        return rand_start(self.np_random, self.randomize_start,
                                     self.fov_deg, self.detection_range)
 
     def reset(self, *, seed=None, options=None):
         gym.Env.reset(self, seed=seed)
         self.reset_world(self.np_random, (options or {}).get("initial_state"))
-        self.seeker_policy = ScriptedSeekerPolicy(
+        self.seeker_policy = SeekerBot(
             self.np_random, self.initial_forward, speed=self.seeker_speed,
             obstacles=self.obstacles)
         if self.render_mode == "human":
@@ -110,12 +92,12 @@ class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
             self.visible, self.distance, self.angle, False)
 
     def step(self, action):
-        action = np.clip(checked_vector(np.asarray(action, dtype=np.float32), 3, "evader action"), -1.0, 1.0)
+        action = np.clip(as_vec(np.asarray(action, dtype=np.float32), 3, "evader action"), -1.0, 1.0)
         visible_before, _, _ = self._check_visibility()
         seeker_velocity = self.seeker_policy.act(
             self.seeker_pos, self.evader_pos, visible_before)
         rewards, contacts, truncated = self.advance(
-            seeker_velocity, limit_velocity(action, EVADER_SPEED),
+            seeker_velocity, cap_speed(action, EVADER_SPEED),
             seeker_forward=self.seeker_policy.forward)
         reward = rewards["evader"]
         if not self.visible and self.first_loss_step is None:
@@ -136,9 +118,8 @@ class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
         return self._get_observation(self.visible), reward, False, truncated, info
 
     def _get_observation(self, visible):
-        # Sync for callers of this Stage 1 helper after modifying the scripted policy.
         self.camera_forward = self.seeker_policy.forward.copy()
-        return self.evader_observation(INCLUDE_VISIBILITY_IN_OBS)
+        return self.evader_observation(SHOW_SEEN)
 
     def _get_info(self, visible, distance, angle, boundary_contact):
         return {
@@ -151,9 +132,6 @@ class VanishingPointEnv(gym.Env, Simulator, RendererMixin):
             "searches": int(self.seeker_policy.searches),
         }
 
-# -----------------------------
-# Training / evaluation
-# -----------------------------
 def train_ppo(
     total_timesteps,
     seed,
@@ -166,13 +144,13 @@ def train_ppo(
     print("\n=== PPO TRAINING ===")
     print(f"Seed: {seed}")
     print(f"Timesteps: {total_timesteps:,}")
-    print(f"Visibility in observation: {INCLUDE_VISIBILITY_IN_OBS}")
+    print(f"Visibility in observation: {SHOW_SEEN}")
     if curriculum:
         print(f"Curriculum: ON ({stages} stages, easy to full difficulty)")
     else:
         print("Curriculum: OFF (full difficulty throughout)")
 
-    raw_env = VanishingPointEnv(render_mode=None, randomize_start=True, obstacles=obstacles)
+    raw_env = PPOEnv(render_mode=None, randomize_start=True, obstacles=obstacles)
     check_env(raw_env, warn=True)
     env = Monitor(raw_env)
 
@@ -219,7 +197,6 @@ def train_ppo(
 
 
 def run_episode(env, action_fn, seed):
-    """Run one full episode and return the environment's episode summary."""
     obs, _ = env.reset(seed=seed)
     done = False
     info = {}
@@ -244,7 +221,6 @@ def print_episode(index, s):
 
 
 def print_summary(summaries):
-    """Print the same six metrics for every evaluation mode."""
     returns = np.array([s["total_reward"] for s in summaries])
     ratios = np.array([s["undetected_ratio"] for s in summaries])
     losses = [
@@ -272,7 +248,7 @@ def print_summary(summaries):
 
 
 def evaluate_policy(title, action_fn_factory, episodes, seed, render, overrides, obstacles=None):
-    env = VanishingPointEnv(
+    env = PPOEnv(
         render_mode="human" if render else None,
         randomize_start=True,
         obstacles=obstacles,
@@ -305,7 +281,6 @@ def evaluate_ppo(model_path, episodes, seed, render, overrides, obstacles=None):
 
 
 def evaluate_random(episodes, seed, render, overrides, obstacles=None):
-    """Baseline using random actions from the same PPO action space."""
 
     def factory(env):
         env.action_space.seed(seed)
@@ -321,7 +296,7 @@ def add_difficulty_args(parser):
                         help="Override camera field of view in degrees (default 90)")
     parser.add_argument("--range", dest="detection_range", type=float, default=None,
                         help="Override detection range in metres (default 10)")
-    parser.add_argument("--obstacles", default=None, choices=sorted(OBSTACLE_PRESETS),
+    parser.add_argument("--obstacles", default=None, choices=sorted(BOX_MAPS),
                         help="Obstacle preset (default: none). Changes the observation size, so "
                              "a model must be trained and evaluated with the same preset")
 
@@ -352,7 +327,7 @@ def parse_args():
         "--curriculum", action="store_true",
         help="Train from an easy Seeker up to full difficulty",
     )
-    train_parser.add_argument("--obstacles", default=None, choices=sorted(OBSTACLE_PRESETS),
+    train_parser.add_argument("--obstacles", default=None, choices=sorted(BOX_MAPS),
                               help="Train inside an obstacle preset (default: none)")
     train_parser.add_argument(
         "--stages", type=int, default=4,

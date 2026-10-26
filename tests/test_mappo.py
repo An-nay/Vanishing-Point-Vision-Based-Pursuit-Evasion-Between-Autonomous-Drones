@@ -1,4 +1,3 @@
-"""MAPPO: GAE, masking, bootstrapping, persistence, training smoke runs and evaluator compatibility."""
 import copy
 import csv
 import numpy as np
@@ -6,8 +5,8 @@ import pytest
 import torch
 from vp.mappo import MAPPO, gae, load_mappo_config
 from scripts.train_mappo import train
-from vp.policy_io import load_policy
-from vp.parallel import VanishingPointParallelEnv, AGENTS
+from vp.policy_io import load_net
+from vp.parallel import DroneEnv, AGENTS
 from scripts.evaluate_stage2 import evaluate
 from pathlib import Path
 
@@ -24,15 +23,14 @@ def small_config():
 def test_gae_matches_hand_computation_and_cuts_at_done():
     rewards, values = [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
     adv, ret = gae(rewards, values, [0.0, 0.0, 0.0], last_value=2.0, gamma=0.5, lam=1.0)
-    # with these numbers the discounted return plus bootstrap is 2.0 at every step
     assert adv == pytest.approx([2.0, 2.0, 2.0])
     cut, _ = gae(rewards, values, [0.0, 1.0, 0.0], last_value=2.0, gamma=0.5, lam=1.0)
-    assert cut[1] == pytest.approx(1.0) and cut[0] == pytest.approx(1.5)  # nothing leaks across the episode end
+    assert cut[1] == pytest.approx(1.0) and cut[0] == pytest.approx(1.5)
 
 
 def test_masked_steps_do_not_train_the_agent():
     config = small_config()
-    env = VanishingPointParallelEnv(**config["environment"])
+    env = DroneEnv(**config["environment"])
     dims = {a: env.observation_space(a).shape[0] for a in AGENTS}
     acts = {a: env.action_space(a).shape[0] for a in AGENTS}
     learner = MAPPO(dims, acts, 26, config)
@@ -51,12 +49,12 @@ def test_masked_steps_do_not_train_the_agent():
 
 def test_checkpoint_roundtrip_and_shared_loader(tmp_path):
     config = small_config()
-    env = VanishingPointParallelEnv(**config["environment"])
+    env = DroneEnv(**config["environment"])
     dims = {a: env.observation_space(a).shape[0] for a in AGENTS}
     acts = {a: env.action_space(a).shape[0] for a in AGENTS}
     learner = MAPPO(dims, acts, 26, config)
     learner.save(tmp_path / "m.pt")
-    loaded = load_policy(tmp_path / "m.pt")
+    loaded = load_net(tmp_path / "m.pt")
     assert isinstance(loaded, MAPPO)
     obs, _ = env.reset(seed=1)
     for agent in AGENTS:
@@ -77,7 +75,7 @@ def test_training_phases_log_opponent_modes(tmp_path):
 
 def test_evaluator_accepts_mappo_checkpoints(tmp_path):
     config = small_config()
-    config["environment"]["episode_steps"] = 600  # the evaluator requires the original horizon
+    config["environment"]["episode_steps"] = 600
     config.update(total_steps=64)
     seeker_ckpt = train(copy.deepcopy(config), "seeker", tmp_path / "B", opponent_model="models/ppo_500k.zip")
     joint_ckpt = train(copy.deepcopy(config), "simultaneous", tmp_path / "C", initialize=seeker_ckpt)

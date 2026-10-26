@@ -1,12 +1,10 @@
-"""Lazy PyBullet visualization shared by both RL interfaces."""
 import math
 import numpy as np
-from vp.core import ARENA_X, ARENA_Y, ARENA_Z, DT, CITY_LIGHTS, CITY_TREES
+from vp.core import ARENA_X, ARENA_Y, ARENA_Z, DT, LAMPS, TREES
 
 SEEKER_COLOUR = [0.90, 0.15, 0.15, 1.0]
 EVADER_COLOUR = [0.15, 0.45, 0.95, 1.0]
-DRONE_SCALE = 1.8  # drawn larger than the collision radius so they read as drones
-# High corner views. A shallow angle looks into the towers and hides the streets.
+DRONE_SCALE = 1.8
 CAMERA_VIEWS = (
     (26, 40, -62),
     (26, 130, -58),
@@ -14,12 +12,11 @@ CAMERA_VIEWS = (
     (26, 310, -56),
 )
 
-class RendererMixin:
+class Drawer:
     def _init_renderer(self):
         global p, pybullet_data
         import pybullet as p
         import pybullet_data
-        # Tests/screenshots can set render_backend = p.DIRECT to render without a window.
         self.physics_client = p.connect(getattr(self, 'render_backend', p.GUI))
         if self.physics_client < 0:
             raise RuntimeError('PyBullet could not connect to the renderer')
@@ -38,7 +35,6 @@ class RendererMixin:
         self._create_arena()
 
     def _aim_camera(self):
-        """Hold each corner for five seconds, looking down over the towers."""
         distance, yaw, pitch = CAMERA_VIEWS[(self._camera_frame // 50) % len(CAMERA_VIEWS)]
         self._camera_frame += 1
         p.resetDebugVisualizerCamera(
@@ -81,14 +77,13 @@ class RendererMixin:
         self._create_obstacles()
 
     def _create_details(self):
-        """Lamps, two trees, and a mast on each full-height tower. Debug only, no bodies."""
         client = self.physics_client
-        for x, y in CITY_LIGHTS:
+        for x, y in LAMPS:
             p.addUserDebugLine([x, y, 0.05], [x, y, 1.15], [0.55, 0.52, 0.4], lineWidth=1.2,
                                lifeTime=0, physicsClientId=client)
             p.addUserDebugPoints([[x, y, 1.25]], [[1.0, 0.86, 0.45]], pointSize=8,
                                  lifeTime=0, physicsClientId=client)
-        for x, y in CITY_TREES:
+        for x, y in TREES:
             p.addUserDebugLine([x, y, 0.05], [x, y, 1.2], [0.42, 0.3, 0.18], lineWidth=2.0,
                                lifeTime=0, physicsClientId=client)
             ring = []
@@ -105,7 +100,6 @@ class RendererMixin:
                                [0.75, 0.78, 0.9], lineWidth=1.2, lifeTime=0, physicsClientId=client)
 
     def _create_streets(self):
-        """Lane lines on the floor. A segment is skipped when it runs through a building."""
         def open_line(start, end):
             start, end = np.asarray(start, float), np.asarray(end, float)
             for step in range(8):
@@ -153,7 +147,6 @@ class RendererMixin:
                               physicsClientId=self.physics_client)
 
     def _create_drone(self, position, rgba):
-        """Quadcopter: body, two crossed arms, four rotor discs and a nose marker (+x)."""
         k = DRONE_SCALE
         arm = 0.42 * k
         dark = [0.12, 0.12, 0.12, 1.0]
@@ -192,10 +185,9 @@ class RendererMixin:
         self._place_drones()
 
     def _place_drones(self):
-        """Seeker faces its camera; the Evader faces its direction of travel."""
         forward = np.asarray(self.camera_forward, dtype=float)
         seeker_yaw = math.atan2(forward[1], forward[0])
-        seeker_pitch = -math.asin(float(np.clip(forward[2], -1, 1)))  # +pitch tilts the nose down in PyBullet
+        seeker_pitch = -math.asin(float(np.clip(forward[2], -1, 1)))
         velocity = np.asarray(self.evader_velocity, dtype=float)
         if np.linalg.norm(velocity[:2]) > 0.1:
             self._heading['evader'] = math.atan2(velocity[1], velocity[0])
@@ -206,7 +198,6 @@ class RendererMixin:
                                               physicsClientId=self.physics_client)
 
     def _draw_view_cone(self, visible):
-        """Seeker field of view as a wireframe cone clipped at the detection range."""
         forward = np.asarray(self.camera_forward, dtype=float)
         helper = np.array([0.0, 0.0, 1.0]) if abs(forward[2]) < 0.95 else np.array([1.0, 0.0, 0.0])
         right = np.cross(forward, helper)
@@ -241,7 +232,6 @@ class RendererMixin:
         self._draw_view_cone(visible)
         self._draw_trails()
 
-        # Sight line: green = seen, orange = in range and in FOV but hidden behind an obstacle.
         blocked = (not visible) and distance <= self.detection_range and angle <= self.fov_deg / 2
         if visible or blocked:
             p.addUserDebugLine(self.seeker_pos.tolist(), self.evader_pos.tolist(),
@@ -262,7 +252,6 @@ class RendererMixin:
         p.stepSimulation(physicsClientId=self.physics_client)
 
     def snapshot(self, path, width=960, height=720):
-        """Save the current scene to a PNG (works with render_backend = p.DIRECT)."""
         import matplotlib.image as mpimg
         view = p.computeViewMatrixFromYawPitchRoll([ARENA_X / 2, ARENA_Y / 2, ARENA_Z / 3], 30, 45, -28, 0, 2,
                                                    physicsClientId=self.physics_client)

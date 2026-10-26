@@ -1,9 +1,3 @@
-"""MAPPO: per-agent Gaussian actors with centralised value critics, trained with clipped PPO.
-
-On-policy and model-free (policy-gradient). Used as a comparison to MADDPG on the same environment,
-observations, opponents and evaluation. Each agent has its own actor (local observation) and its own
-critic (global state, training only), because the two agents' rewards differ.
-"""
 import copy
 import json
 from pathlib import Path
@@ -56,7 +50,7 @@ class GaussianActor(nn.Module):
         self.log_std = nn.Parameter(torch.full((action_dim,), float(init_log_std)))
 
     def forward(self, observation):
-        return self.net(observation)  # mean action (unclipped)
+        return self.net(observation)
 
     def distribution(self, observation):
         return Normal(self.net(observation), self.log_std.exp())
@@ -83,9 +77,7 @@ class MAPPO:
         self.update_count = 0
         self.training_step = 0
 
-    # ---- acting -------------------------------------------------------------------------------
     def act(self, agent, observation, noise_std=0.0):
-        """Deterministic action (the Gaussian mean, clipped): used for evaluation and as a frozen opponent."""
         obs = np.asarray(observation, dtype=np.float32)
         if obs.shape != (self.obs_dims[agent],) or not np.all(np.isfinite(obs)):
             raise ValueError(f"{agent} observation must be a finite vector of {self.obs_dims[agent]} values")
@@ -95,7 +87,6 @@ class MAPPO:
 
     @torch.no_grad()
     def sample(self, agent, observation):
-        """Stochastic action for training: returns (raw action, log-probability)."""
         dist = self.actors[agent].distribution(torch.as_tensor(observation, dtype=torch.float32, device=self.device))
         raw = dist.sample()
         return raw.cpu().numpy(), float(dist.log_prob(raw).sum())
@@ -104,9 +95,7 @@ class MAPPO:
     def value(self, agent, state):
         return float(self.critics[agent](torch.as_tensor(state, dtype=torch.float32, device=self.device)))
 
-    # ---- learning -----------------------------------------------------------------------------
     def update(self, agent, data, rng):
-        """Clipped-PPO epochs on one agent's rollout. `data['valid']` masks steps the agent did not act in."""
         cfg = self.config
         tensors = {k: torch.as_tensor(v, dtype=torch.float32, device=self.device) for k, v in data.items()}
         size = len(tensors["obs"])
@@ -142,7 +131,6 @@ class MAPPO:
         self.update_count += 1
         return {k: v / max(batches, 1) for k, v in totals.items()}
 
-    # ---- persistence --------------------------------------------------------------------------
     def save(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,7 +162,6 @@ class MAPPO:
 
 
 def gae(rewards, values, dones, last_value, gamma, lam):
-    """Generalised advantage estimation. `dones[t]`=1 cuts the bootstrap after step t."""
     advantages = np.zeros(len(rewards), dtype=np.float64)
     running = 0.0
     for t in reversed(range(len(rewards))):

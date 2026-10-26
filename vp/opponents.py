@@ -1,9 +1,8 @@
-"""Frozen opponents; PPO remains separately loadable, never copied into MADDPG."""
 from pathlib import Path
 import numpy as np
 
 
-class RandomEvader:
+class RandEvader:
     def __init__(self, seed):
         self.rng = np.random.default_rng(seed)
 
@@ -12,7 +11,7 @@ class RandomEvader:
         return self.rng.uniform(-1., 1., shape).astype(np.float32)
 
 
-class PPOEvader:
+class PPOOpp:
     def __init__(self, path):
         path = Path(path)
         if not path.is_file() and not path.with_suffix(".zip").is_file():
@@ -24,16 +23,15 @@ class PPOEvader:
             raise ValueError("PPO opponent must use 21 (Stage 1) or 30 (obstacle) observations and 3 actions")
 
     def act(self, observation):
-        # A Stage 1 (21-value) PPO dropped into an obstacle world simply cannot see the obstacles.
         observation = np.asarray(observation, dtype=np.float32)[..., :self.obs_dim]
         action, _ = self.model.predict(observation, deterministic=True)
         return np.clip(action, -1., 1.).astype(np.float32)
 
 
-class CheckpointOpponent:
+class SavedNet:
     def __init__(self, path, agent):
-        from vp.policy_io import load_policy
-        self.learner = load_policy(path)  # MADDPG or MAPPO checkpoint
+        from vp.policy_io import load_net
+        self.learner = load_net(path)
         self.agent = agent
 
     def act(self, observation):
@@ -41,29 +39,23 @@ class CheckpointOpponent:
         if obs.ndim == 1:
             return self.learner.act(self.agent, obs)
         import torch
-        with torch.no_grad():  # whole batch in one forward pass (used for critic targets)
+        with torch.no_grad():
             return np.clip(self.learner.actors[self.agent](torch.as_tensor(obs)).numpy(), -1., 1.).astype(np.float32)
 
 
-def make_evader(kind, seed, model_path=None):
+def make_opp(kind, seed, model_path=None):
     if kind == "random":
-        return RandomEvader(seed)
+        return RandEvader(seed)
     if not model_path:
         raise ValueError(f"--opponent-model is required for {kind}")
     if kind == "ppo":
-        return PPOEvader(model_path)
+        return PPOOpp(model_path)
     if kind == "maddpg":
-        return CheckpointOpponent(model_path, "evader")
+        return SavedNet(model_path, "evader")
     raise ValueError(f"unknown opponent: {kind}")
 
 
-class OpponentProvider:
-    """Frozen policies for ONE agent: id 0 = a fixed policy (PPO Evader / pretrained Seeker), ids >= 1 = past snapshots.
-
-    Snapshots are copies of the learner's own actor taken during training (an opponent pool). `batch` evaluates
-    each row with the snapshot that actually played it, so critic targets stay consistent; rows whose snapshot
-    was evicted come back as NaN and the learner falls back to its own target actor for them.
-    """
+class OppPool:
     uses_ids = True
 
     def __init__(self, agent, action_dim, fixed=None, capacity=20, build_actor=None):

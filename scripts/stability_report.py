@@ -1,11 +1,3 @@
-"""Training-stability statistics from episodes.csv of several runs (joint-game episodes only).
-
-    python -m scripts.stability_report --group no_pool runs/final2_C_s*/simultaneous_s* --group pool runs/pool_C_s*/simultaneous_s*
-
-Per run: the Evader's visible % smoothed over a window; oscillation = standard deviation and peak-to-peak of that
-curve over the second half of training; final level = mean of the last 10 % of episodes. Reported per group as the
-mean over runs plus the spread of the final level across runs (seed-to-seed stability).
-"""
 import argparse
 import csv
 from pathlib import Path

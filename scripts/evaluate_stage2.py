@@ -1,14 +1,13 @@
-"""Phase D: paired starts, multi-seed evaluation and historical-opponent tests."""
 import argparse
 import csv
 import json
 from pathlib import Path
 import numpy as np
-from vp.core import sample_initial_state
-from vp.parallel import VanishingPointParallelEnv, AGENTS
+from vp.core import rand_start
+from vp.parallel import DroneEnv, AGENTS
 from vp.maddpg import load_config
-from vp.policy_io import load_policy
-from vp.opponents import PPOEvader, CheckpointOpponent
+from vp.policy_io import load_net
+from vp.opponents import PPOOpp, SavedNet
 from vp.paths import MODELS, RUNS
 
 SCALAR_METRICS = [
@@ -30,17 +29,15 @@ _SHAPING_KEYS = (
 
 
 def same_world(first, second):
-    """Environment settings match, ignoring training-only reward shaping (evaluation is unshaped)."""
     strip = lambda cfg: {k: v for k, v in cfg.items() if k not in _SHAPING_KEYS}
     return strip(first) == strip(second)
 
 
 def _unshaped(env_options):
-    # Scrub every shaping knob to its no-op value so the eval reward matches Stage 1.
     scrubbed = {**env_options}
     for key in _SHAPING_KEYS:
         if key == "seeker_visible_bonus" or key == "evader_hidden_bonus":
-            scrubbed[key] = None  # None keeps the default +/-1 symmetric Stage 1 rule
+            scrubbed[key] = None
         else:
             scrubbed[key] = 0.0
     return scrubbed
@@ -48,9 +45,8 @@ def _unshaped(env_options):
 
 def evaluate_matchup(label, seeker, evader, seed, episode, start, env_options,
                      output, render=False):
-    # Always score the ORIGINAL (unshaped) rewards so numbers match Stage 1 and across configs.
     env_options = _unshaped(env_options)
-    env = VanishingPointParallelEnv(render_mode="human" if render else None, **env_options)
+    env = DroneEnv(render_mode="human" if render else None, **env_options)
     trajectory = []
     try:
         observations, _ = env.reset(seed=seed, options={"initial_state": start})
@@ -61,7 +57,6 @@ def evaluate_matchup(label, seeker, evader, seed, episode, start, env_options,
 
         capture()
         while env.agents:
-            # Both policies see the same pre-transition observation dictionary.
             evader_action = evader(observations["evader"])
             if seeker is None:
                 observations, _, _, _, _ = env.step_scripted(evader_action)
@@ -85,7 +80,6 @@ def evaluate_matchup(label, seeker, evader, seed, episode, start, env_options,
 
 
 def bootstrap_ci(values, resamples=4000, seed=0):
-    """95% percentile bootstrap CI of the mean (resampling episodes)."""
     values = np.asarray(values, dtype=float)
     if len(values) < 2:
         return (float(values.mean()), float(values.mean())) if len(values) else (None, None)
@@ -95,7 +89,6 @@ def bootstrap_ci(values, resamples=4000, seed=0):
 
 
 def paired_differences(rows, reference="stage1_baseline", metric="visible_pct"):
-    """Mean (experiment - reference) over episodes sharing the same start, with bootstrap CI."""
     base = {(r["seed"]): r[metric] for r in rows if r["experiment"] == reference}
     out = []
     for label in dict.fromkeys(r["experiment"] for r in rows):
@@ -145,9 +138,7 @@ def evaluate(ppo_path, joint_path, seeker_path, seeds, episodes, output,
     output = Path(output)
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"evaluation directory is not empty: {output}")
-    ppo = PPOEvader(ppo_path)
-    # Stage 2 matchups contain only learned policies. The scripted Seeker belongs to Stage 1 and is
-    # evaluated only for --baseline-only or when --stage1-reference is requested explicitly.
+    ppo = PPOOpp(ppo_path)
     matches = []
     if baseline_only:
         matches.append(("stage1_baseline", None, ppo.act))
@@ -159,15 +150,15 @@ def evaluate(ppo_path, joint_path, seeker_path, seeds, episodes, output,
     if not baseline_only:
         if not joint_path:
             raise ValueError("--joint-checkpoint is required unless --baseline-only is set")
-        joint = load_policy(joint_path)
-        expected = VanishingPointParallelEnv(**joint.config["environment"])
+        joint = load_net(joint_path)
+        expected = DroneEnv(**joint.config["environment"])
         expected_dims = {a: expected.observation_space(a).shape[0] for a in AGENTS}
         if joint.obs_dims != expected_dims or joint.action_dims != {"seeker": 5, "evader": 3}:
             raise ValueError("joint checkpoint is incompatible with Stage 2")
         env_options = joint.config["environment"].copy()
         if env_options["episode_steps"] != 600:
             raise ValueError("comparison requires the original 600-step horizon")
-        learned_seeker = load_policy(seeker_path) if seeker_path else joint
+        learned_seeker = load_net(seeker_path) if seeker_path else joint
         if not same_world(learned_seeker.config["environment"], joint.config["environment"]):
             raise ValueError("seeker and joint checkpoints must share environment settings")
         seeker_act = lambda obs: joint.act("seeker", obs)
@@ -179,13 +170,13 @@ def evaluate(ppo_path, joint_path, seeker_path, seeds, episodes, output,
         checkpoints["joint"] = str(joint_path)
         checkpoints["seeker"] = str(seeker_path or joint_path)
         for index, checkpoint in enumerate(historical_evaders):
-            prior = CheckpointOpponent(checkpoint, "evader")
+            prior = SavedNet(checkpoint, "evader")
             if not same_world(prior.learner.config["environment"], env_options):
                 raise ValueError("historical Evader environment differs from evaluation")
             matches.append((f"historical_evader_{index}", seeker_act, prior.act))
             checkpoints[f"historical_evader_{index}"] = str(checkpoint)
         for index, checkpoint in enumerate(historical_seekers):
-            prior = CheckpointOpponent(checkpoint, "seeker")
+            prior = SavedNet(checkpoint, "seeker")
             if not same_world(prior.learner.config["environment"], env_options):
                 raise ValueError("historical Seeker environment differs from evaluation")
             matches.append((f"historical_seeker_{index}", prior.act, evader_act))
@@ -195,7 +186,7 @@ def evaluate(ppo_path, joint_path, seeker_path, seeds, episodes, output,
     for base_seed in seeds:
         for episode in range(episodes):
             seed = base_seed + episode
-            seeker, evader, forward = sample_initial_state(
+            seeker, evader, forward = rand_start(
                 np.random.default_rng(seed), obstacles=env_options.get("obstacles"))
             if hidden_start:
                 forward = -forward

@@ -1,17 +1,3 @@
-"""Generate convergence + behaviour plots for the fix6 multiseed run.
-
-Writes PNG files to docs/figures/fix6/:
-  B_visible.png        Phase B visible % learning curve (3 seeds).
-  B_longest_hidden.png Phase B longest hidden stretch per episode (3 seeds).
-  B_reacq.png          Phase B reacquisition time per episode (3 seeds).
-  C_visible.png        Phase C self-play visible % learning curve (3 seeds).
-  C_losses.png         Phase C actor losses: Seeker vs Evader (3 seeds).
-  C_boundary.png       Phase C Evader + Seeker boundary steps over training (3 seeds).
-  C_eval_bar.png       Final paired-eval visible % per seed, with the 40-60% balanced band.
-
-Usage:
-    python -m scripts.plot_fix6
-"""
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -20,7 +6,7 @@ matplotlib.use("Agg")
 
 SEEDS = [2001, 2002, 2003]
 COLOURS = {2001: "#1f77b4", 2002: "#ff7f0e", 2003: "#2ca02c"}
-ROLL = 100  # rolling-mean window in episodes
+ROLL = 100
 
 OUT = Path("docs/figures/fix6")
 OUT.mkdir(parents=True, exist_ok=True)

@@ -1,13 +1,12 @@
-"""Phase A validation, Phase B frozen-opponent training, Phase C joint learning."""
 import argparse
 import csv
 import json
 from pathlib import Path
 import numpy as np
-from vp.parallel import VanishingPointParallelEnv, AGENTS
-from vp.core import OBSTACLE_PRESETS
-from vp.maddpg import MADDPG, ReplayBuffer, load_config, DEFAULT_CONFIG
-from vp.opponents import make_evader, CheckpointOpponent, OpponentProvider
+from vp.parallel import DroneEnv, AGENTS
+from vp.core import BOX_MAPS
+from vp.maddpg import MADDPG, MemBuf, load_config, DEFAULT_CONFIG
+from vp.opponents import make_opp, SavedNet, OppPool
 from vp.paths import RUNS
 
 EPISODE_FIELDS = [
@@ -23,7 +22,6 @@ UPDATE_FIELDS = ["step", "update", "seeker_actor_loss", "seeker_critic_loss",
 
 
 def episode_seed(config_seed, episode):
-    """Episode world seeds never collide across training seeds (each seed owns a 1M block)."""
     return config_seed * 1_000_003 + episode
 
 
@@ -34,7 +32,7 @@ def noise_at(step, config):
 
 def validate_environment(config, seed, episodes=2, render=False):
     from pettingzoo.test import parallel_api_test
-    env = VanishingPointParallelEnv(**config["environment"])
+    env = DroneEnv(**config["environment"])
     try:
         parallel_api_test(env, num_cycles=config["environment"]["episode_steps"] + 5)
         for episode in range(episodes):
@@ -45,7 +43,7 @@ def validate_environment(config, seed, episodes=2, render=False):
     finally:
         env.close()
     if render:
-        demo = VanishingPointParallelEnv(render_mode="human", **config["environment"])
+        demo = DroneEnv(render_mode="human", **config["environment"])
         try:
             demo.reset(seed=seed)
             while demo.agents:
@@ -55,7 +53,6 @@ def validate_environment(config, seed, episodes=2, render=False):
 
 
 def choose_mode(config, rng, phase):
-    """Per-episode opponent: self-play, a frozen PPO Evader, or a frozen learned Seeker (simultaneous phase only)."""
     if phase != "simultaneous":
         return "selfplay"
     draw = rng.random()
@@ -66,24 +63,23 @@ def choose_mode(config, rng, phase):
     if draw < edge:
         return "frozen_seeker"
     if draw < edge + config.get("mix_pool_seeker", 0.0):
-        return "pool_seeker"  # a past Seeker snapshot plays against the learning Evader
+        return "pool_seeker"
     if draw < edge + config.get("mix_pool_seeker", 0.0) + config.get("mix_pool_evader", 0.0):
-        return "pool_evader"  # a past Evader snapshot plays against the learning Seeker
+        return "pool_evader"
     return "selfplay"
 
 
 def train(config, phase, output, opponent_kind="random", opponent_model=None,
           initialize=None, render=False):
-    """Returns the saved final checkpoint. Replay is fresh for each training run."""
     output = Path(output)
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"output directory is not empty: {output}; choose a new run directory")
     output.mkdir(parents=True, exist_ok=True)
-    env = VanishingPointParallelEnv(render_mode="human" if render else None,
+    env = DroneEnv(render_mode="human" if render else None,
                                    **config["environment"])
     obs_dims = {a: env.observation_space(a).shape[0] for a in AGENTS}
     action_dims = {a: env.action_space(a).shape[0] for a in AGENTS}
-    opponent = make_evader(opponent_kind, config["seed"], opponent_model) if phase == "seeker" else None
+    opponent = make_opp(opponent_kind, config["seed"], opponent_model) if phase == "seeker" else None
     learner = MADDPG(obs_dims, action_dims, env.state_space.shape[0], config)
     if initialize:
         prior = MADDPG.load(initialize)
@@ -95,7 +91,7 @@ def train(config, phase, output, opponent_kind="random", opponent_model=None,
                     getattr(learner, name)[agent].load_state_dict(getattr(prior, name)[agent].state_dict())
                 except RuntimeError as exc:
                     raise ValueError("initial checkpoint network sizes do not match config") from exc
-    replay = ReplayBuffer(config["replay_capacity"], obs_dims, action_dims,
+    replay = MemBuf(config["replay_capacity"], obs_dims, action_dims,
                           learner.state_dim, seed=config["seed"])
     active = ("seeker",) if phase == "seeker" else AGENTS
     frozen = {"evader": opponent.act} if opponent else None
@@ -105,24 +101,23 @@ def train(config, phase, output, opponent_kind="random", opponent_model=None,
                     "initialize": str(initialize) if initialize else None}
     (output / "run.json").write_text(json.dumps(run_metadata, indent=2) + "\n", encoding="utf-8")
     rng = np.random.default_rng(config["seed"])
-    mix_opponent = (make_evader("ppo", config["seed"], config["mix_ppo_model"])
+    mix_opponent = (make_opp("ppo", config["seed"], config["mix_ppo_model"])
                     if config.get("mix_ppo_evader", 0.0) > 0 else None)
     seeker_opponent = None
     if config.get("mix_frozen_seeker", 0.0) > 0:
         if not initialize:
             raise ValueError("mix_frozen_seeker needs --initialize: the pretrained Seeker is the frozen opponent")
-        seeker_opponent = CheckpointOpponent(initialize, "seeker")
+        seeker_opponent = SavedNet(initialize, "seeker")
     from vp.maddpg import Actor
     pool_on = phase == "simultaneous" and (config.get("mix_pool_seeker", 0.0) > 0 or config.get("mix_pool_evader", 0.0) > 0)
-    providers = {a: OpponentProvider(a, action_dims[a], fixed=fixed, capacity=config.get("pool_size", 20),
+    providers = {a: OppPool(a, action_dims[a], fixed=fixed, capacity=config.get("pool_size", 20),
                                      build_actor=lambda a=a: Actor(obs_dims[a], action_dims[a], config["hidden_sizes"]))
                  for a, fixed in (("evader", mix_opponent), ("seeker", seeker_opponent))}
-    if pool_on:  # the starting (warm-started) policies are the first snapshots
+    if pool_on:
         for a in AGENTS:
             providers[a].add_snapshot(learner.actors[a].state_dict())
 
     def pick(requested):
-        """Resolve the episode's opponent: (mode, frozen-policy id). Empty pools fall back to self-play."""
         if requested == "pool_seeker" or requested == "pool_evader":
             ids = providers["seeker" if requested == "pool_seeker" else "evader"].snapshot_ids()
             return (requested, int(rng.choice(ids))) if ids else ("selfplay", 0)
@@ -161,14 +156,14 @@ def train(config, phase, output, opponent_kind="random", opponent_model=None,
                            frozen_id=(opponent_id if mode in ("frozen_seeker", "pool_seeker") else 0,
                                       opponent_id if mode in ("ppo_evader", "pool_evader") else 0))
                 if pool_on and step >= config["warmup_steps"] and step % config.get("pool_every", 30000) == 0:
-                    for a in AGENTS:  # snapshot both learners into the opponent pool
+                    for a in AGENTS:
                         providers[a].add_snapshot(learner.actors[a].state_dict())
                 learner.training_step = step
                 if (step >= config["warmup_steps"] and len(replay) >= config["batch_size"]
                         and step % config["learn_every"] == 0):
                     learners = active
                     block = config.get("alternate_every", 0)
-                    if block and phase == "simultaneous":  # train one agent at a time (less non-stationary)
+                    if block and phase == "simultaneous":
                         pattern = config.get("alternate_pattern") or list(AGENTS)
                         learners = (pattern[(step // block) % len(pattern)],)
                     for _ in range(config["updates_per_step"]):
@@ -222,7 +217,7 @@ def main():
     parser.add_argument("--opponent-model", type=Path)
     parser.add_argument("--initialize", type=Path, help="Warm-start compatible MADDPG networks; fresh replay/optimizers")
     parser.add_argument("--render", action="store_true")
-    parser.add_argument("--obstacles", choices=sorted(OBSTACLE_PRESETS),
+    parser.add_argument("--obstacles", choices=sorted(BOX_MAPS),
                         help="Obstacle preset; overrides the config (changes observation size)")
     args = parser.parse_args()
     try:

@@ -1,4 +1,3 @@
-"""Small CPU-friendly MADDPG: local actors, global-state/joint-action critics."""
 import copy
 import json
 from pathlib import Path
@@ -20,7 +19,7 @@ def load_config(path=DEFAULT_CONFIG):
                 "checkpoint_every", "torch_threads", "total_steps", "seed", "environment"}
     optional = {"action_reg", "alternate_every", "alternate_pattern", "mix_ppo_evader", "mix_ppo_model", "mix_frozen_seeker",
                                                   "mix_pool_seeker", "mix_pool_evader", "pool_every", "pool_size",
-                                                  "actor_lr_seeker", "actor_lr_evader"}  # action_reg: pre-tanh L2 coefficient; alternate_every: steps per single-learner block (0 = both learn)
+                                                  "actor_lr_seeker", "actor_lr_evader"}
     if not required <= set(config) <= required | optional:
         raise ValueError(f"config keys differ: missing={required - set(config)}, extra={set(config) - required}")
     positive_ints = ["batch_size", "replay_capacity", "learn_every", "updates_per_step",
@@ -108,8 +107,7 @@ class Critic(nn.Module):
         return self.net(torch.cat([state, joint_actions], dim=-1))
 
 
-class ReplayBuffer:
-    """Aligned joint transitions; final next observations are captured before reset."""
+class MemBuf:
     def __init__(self, capacity, obs_dims, action_dims, state_dim, seed=0):
         self.capacity = capacity
         self.obs_dims, self.action_dims = dict(obs_dims), dict(action_dims)
@@ -124,9 +122,8 @@ class ReplayBuffer:
         self.rewards = np.empty((capacity, 2), np.float32)
         self.terminated = np.empty((capacity, 2), np.float32)
         self.truncated = np.empty((capacity, 2), np.float32)
-        # columns follow AGENTS: 1 = that agent's action came from a frozen opponent policy
         self.frozen = np.zeros((capacity, 2), np.float32)
-        self.frozen_id = np.zeros((capacity, 2), np.int64)  # which frozen policy (0 = the fixed one, k>=1 = pool snapshot k)
+        self.frozen_id = np.zeros((capacity, 2), np.int64)
 
     def __len__(self):
         return self.size
@@ -181,9 +178,7 @@ class ReplayBuffer:
         }
 
 
-def bellman_target(reward, terminated, next_q, gamma):
-    # External time limits are truncated, not terminal. Bootstrap from the
-    # final world state, never from the next episode's reset observation.
+def q_backup(reward, terminated, next_q, gamma):
     return reward + gamma * (1.0 - terminated) * next_q
 
 
@@ -215,7 +210,7 @@ class MADDPG:
         self.training_step = 0
 
     def act(self, agent, observation, noise_std=0.0):
-        obs = ReplayBuffer._check(observation, (self.obs_dims[agent],), agent + " observation")
+        obs = MemBuf._check(observation, (self.obs_dims[agent],), agent + " observation")
         if not np.isfinite(noise_std) or noise_std < 0:
             raise ValueError("noise_std must be finite and non-negative")
         with torch.no_grad():
@@ -240,18 +235,16 @@ class MADDPG:
             next_actions = {}
             override = {}
             for agent in AGENTS:
-                # Own target policy by default (also what the agent's OWN critic must always use).
                 next_actions[agent] = self.target_actors[agent](batch["next_observations"][agent])
                 if not (frozen_next_actions and agent in frozen_next_actions):
                     continue
                 if flagged_only:
-                    # Mixed training: only transitions played against the frozen policy use its next action.
                     rows = batch["frozen"][:, AGENTS.index(agent)] > 0.5
                     if not rows.any():
                         continue
                     next_obs = batch["next_observations"][agent][rows].cpu().numpy()
                     provider = frozen_next_actions[agent]
-                    if getattr(provider, "uses_ids", False):  # a pool: each row may come from a different snapshot
+                    if getattr(provider, "uses_ids", False):
                         ids = batch["frozen_id"][rows, AGENTS.index(agent)].cpu().numpy()
                         prediction = np.asarray(provider.batch(next_obs, ids), dtype=np.float32)
                     else:
@@ -260,11 +253,11 @@ class MADDPG:
                         raise ValueError(agent + " frozen next actions have the wrong shape")
                     replaced = next_actions[agent].clone()
                     known = torch.as_tensor(np.all(np.isfinite(prediction), axis=1), device=self.device)
-                    target_rows = torch.nonzero(rows).squeeze(-1)[known]  # rows whose snapshot was evicted keep the learned target
+                    target_rows = torch.nonzero(rows).squeeze(-1)[known]
                     replaced[target_rows] = torch.as_tensor(prediction[known.cpu().numpy()], device=self.device)
                 else:
                     next_obs = batch["next_observations"][agent].cpu().numpy()
-                    prediction = ReplayBuffer._check(
+                    prediction = MemBuf._check(
                         frozen_next_actions[agent](next_obs),
                         (self.config["batch_size"], self.action_dims[agent]), agent + " frozen next actions")
                     if np.any(np.abs(prediction) > 1):
@@ -273,7 +266,6 @@ class MADDPG:
                 override[agent] = replaced
 
             def joint_next_for(learner):
-                # A frozen policy's action replaces the learned target action only in OTHER agents' critics.
                 return torch.cat([override[a] if a in override and a != learner else next_actions[a]
                                   for a in AGENTS], dim=-1)
         joint_replay = torch.cat([batch["actions"][a] for a in AGENTS], dim=-1)
@@ -282,7 +274,7 @@ class MADDPG:
             index = AGENTS.index(agent)
             with torch.no_grad():
                 next_q = self.target_critics[agent](batch["next_state"], joint_next_for(agent))
-                target = bellman_target(batch["rewards"][:, index:index+1],
+                target = q_backup(batch["rewards"][:, index:index+1],
                                         batch["terminated"][:, index:index+1],
                                         next_q, self.config["gamma"])
             prediction = self.critics[agent](batch["state"], joint_replay)
@@ -295,7 +287,6 @@ class MADDPG:
                                      self.config["gradient_clip"], error_if_nonfinite=True)
             self.critic_optimizers[agent].step()
 
-            # Other agents' sampled replay actions are constants for this gradient.
             actor_actions = {a: batch["actions"][a].detach() for a in AGENTS}
             pre_tanh = self.actors[agent].net[:-1](batch["observations"][agent])
             actor_actions[agent] = torch.tanh(pre_tanh)
@@ -334,7 +325,6 @@ class MADDPG:
         for name in ["actors", "critics", "target_actors", "target_critics",
                      "actor_optimizers", "critic_optimizers"]:
             checkpoint[name] = {a: obj.state_dict() for a, obj in getattr(self, name).items()}
-        # Atomic replacement keeps the previous complete checkpoint on interruption.
         temporary = path.with_suffix(path.suffix + ".tmp")
         torch.save(checkpoint, temporary)
         temporary.replace(path)

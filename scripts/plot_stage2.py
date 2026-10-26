@@ -1,4 +1,3 @@
-"""Standalone learning curves, comparison charts and 3D trajectory figures."""
 import argparse
 import csv
 from pathlib import Path
@@ -30,12 +29,6 @@ def _on_grid(xs, ys, grid):
 
 
 def plot_learning(run_directories, output, window=20, mode="selfplay", loss_window=1000):
-    """Learning curves: per-seed thin lines and the seed mean (bold).
-
-    Competitive co-training oscillates by design (each side adapts to the other), so expect swings in
-    visible time rather than a monotone curve. Losses are smoothed over `loss_window` updates; the
-    sawtooth in raw losses comes from alternating learner blocks.
-    """
     plt = plotting()
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -109,7 +102,6 @@ def plot_evaluation(directory):
     fig.tight_layout()
     fig.savefig(directory / "visibility_comparison.png", dpi=180)
     plt.close(fig)
-    # One 3D panel per matchup for the first paired initial condition.
     episodes = read_rows(directory / "episodes.csv")
     first_seed = episodes[0]["seed"]
     selected = [row for row in episodes if row["seed"] == first_seed]

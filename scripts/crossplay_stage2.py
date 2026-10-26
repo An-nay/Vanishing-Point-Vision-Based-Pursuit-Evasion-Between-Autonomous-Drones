@@ -1,19 +1,10 @@
-"""Cross-play stability test: every Seeker from independent training runs against every Evader.
-
-    python -m scripts.crossplay_stage2 --checkpoints runs/a/final.pt runs/b/final.pt ... --labels s1 s2 ... --output runs/cross
-
-Entry (i, j) = mean % of the episode the Evader of run j is visible to the Seeker of run i on the same held-out
-starts. The diagonal is each run's own co-trained pair; off-diagonals are strangers that never trained together.
-A stable method keeps the off-diagonal close to the diagonal (no overfitting to one partner) and has no
-catastrophic rows/columns (an exploitable Seeker or Evader).
-"""
 import argparse
 import csv
 from pathlib import Path
 import numpy as np
-from vp.policy_io import load_policy
-from vp.core import sample_initial_state
-from vp.parallel import VanishingPointParallelEnv
+from vp.policy_io import load_net
+from vp.core import rand_start
+from vp.parallel import DroneEnv
 
 
 def play(env, seeker, evader, seed, start):
@@ -24,16 +15,16 @@ def play(env, seeker, evader, seed, start):
 
 
 def crossplay(checkpoints, seeds, episodes):
-    policies = [load_policy(path) for path in checkpoints]
-    options = {**policies[0].config["environment"], "boundary_penalty_per_step": 0.0}  # unshaped scoring
+    policies = [load_net(path) for path in checkpoints]
+    options = {**policies[0].config["environment"], "boundary_penalty_per_step": 0.0}
     for policy in policies[1:]:
         if {**policy.config["environment"], "boundary_penalty_per_step": 0.0} != options:
             raise ValueError("all checkpoints must share environment settings")
-    env = VanishingPointParallelEnv(**options)
+    env = DroneEnv(**options)
     starts = []
     for base in seeds:
         for episode in range(episodes):
-            s, e, f = sample_initial_state(np.random.default_rng(base + episode), obstacles=options.get("obstacles"))
+            s, e, f = rand_start(np.random.default_rng(base + episode), obstacles=options.get("obstacles"))
             starts.append((base + episode, {"seeker_pos": s.tolist(), "evader_pos": e.tolist(), "seeker_forward": f.tolist()}))
     n = len(policies)
     matrix = np.zeros((n, n))
@@ -49,7 +40,6 @@ def summarize(matrix):
     off = matrix[~np.eye(n, dtype=bool)]
     return {"own_pair_mean": float(np.mean(np.diag(matrix))), "stranger_mean": float(off.mean()),
             "stranger_std": float(off.std()), "overfit_gap": float(off.mean() - np.mean(np.diag(matrix))),
-            # exploitability proxies: how badly the worst partner treats each side
             "worst_case_evader_visible": float(np.mean([matrix[:, j].max() for j in range(n)])),
             "worst_case_seeker_visible": float(np.mean([matrix[i, :].min() for i in range(n)]))}
 

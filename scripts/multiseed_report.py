@@ -1,11 +1,3 @@
-"""Aggregate paired-eval results across multiple seeds.
-
-Reads runs/<prefix>_s<seed>/eval/episodes.csv for each seed, averages the per-experiment
-metrics, and prints a comparison table with mean + stddev across seeds.
-
-Usage:
-    python -m scripts.multiseed_report --prefix runs/fix3_train --seeds 2001 2002 2003
-"""
 import argparse
 from pathlib import Path
 import pandas as pd
@@ -49,7 +41,6 @@ def main():
         rows.append(row)
     summary = pd.DataFrame(rows)
 
-    # Build markdown
     lines = [f"# Multi-seed summary ({len(args.seeds)} seeds: {args.seeds})", ""]
     lines.append("| Experiment | Visible % (mean +/- std) | Longest hidden s | Evader boundary steps | Reacq time s |")
     lines.append("|---|---:|---:|---:|---:|")

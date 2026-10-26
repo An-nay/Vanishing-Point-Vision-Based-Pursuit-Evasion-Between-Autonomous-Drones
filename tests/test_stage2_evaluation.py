@@ -1,4 +1,3 @@
-"""Paired evaluation and censored-metric checks, including the existing PPO."""
 from pathlib import Path
 import copy
 import csv
@@ -35,7 +34,7 @@ def test_evaluation_uses_identical_initial_conditions_and_only_learned_policies(
     rows = evaluate(Path(__file__).resolve().parent.parent / "models" / "ppo_500k.zip",
                     checkpoint, checkpoint, [51001], 1, output)
     assert len(rows) == 2
-    assert {row["experiment"] for row in rows} == {"learned_seeker_ppo", "stage2_joint"}  # no scripted policy
+    assert {row["experiment"] for row in rows} == {"learned_seeker_ppo", "stage2_joint"}
     trajectories = list((output / "trajectories").glob("*.csv"))
     assert len(trajectories) == 2
     starts = []

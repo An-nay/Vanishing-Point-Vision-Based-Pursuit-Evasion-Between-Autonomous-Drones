@@ -1,4 +1,3 @@
-"""PettingZoo Parallel interface for the shared Vanishing Point world."""
 import time
 import numpy as np
 from gymnasium import spaces
@@ -6,15 +5,15 @@ from gymnasium.utils import seeding
 from pettingzoo import ParallelEnv
 
 from vp.core import (
-    Simulator, ScriptedSeekerPolicy, checked_vector, limit_velocity,
+    Simulator, SeekerBot, as_vec, cap_speed,
     SEEKER_SPEED, EVADER_SPEED, DT,
 )
-from vp.render import RendererMixin
+from vp.render import Drawer
 
 AGENTS = ("seeker", "evader")
 
 
-class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
+class DroneEnv(ParallelEnv, Drawer):
     metadata = {"name": "vanishing_point_v2", "render_modes": ["human"],
                 "render_fps": int(1 / DT), "is_parallelizable": True}
 
@@ -25,8 +24,8 @@ class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
         self.possible_agents = list(AGENTS)
         self.agents = []
         self.sim = Simulator(**world_options)
-        evader_obs_dim = 21 + self.sim.obs_extra  # +9 when obstacles are present
-        seeker_obs_dim = self.sim.seeker_base_obs_dim  # may add +3 for last-known velocity
+        evader_obs_dim = 21 + self.sim.obs_extra
+        seeker_obs_dim = self.sim.seeker_base_obs_dim
         dims = {"seeker": seeker_obs_dim * self.sim.seeker_history, "evader": evader_obs_dim}
         self.observation_spaces = {a: spaces.Box(-1., 1., (dims[a],), np.float32) for a in AGENTS}
         self.action_spaces = {a: spaces.Box(-1., 1., (5 if a == "seeker" else 3,), np.float32)
@@ -37,7 +36,6 @@ class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
         self.seeker_policy = None
 
     def __getattr__(self, name):
-        # RendererMixin reads world positions/constants through the interface.
         sim = self.__dict__.get("sim")
         if sim is not None and hasattr(sim, name):
             return getattr(sim, name)
@@ -55,12 +53,7 @@ class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
             for index, agent in enumerate(AGENTS):
                 self.action_space(agent).seed(seed + index)
         self.sim.reset_world(self.np_random, (options or {}).get("initial_state"))
-        # The scripted Seeker is instantiated here as a dormant helper for Stage 1
-        # scripts (step_scripted / view2d --matchup scripted_*). It is NEVER invoked
-        # in Stage 2: self.seeker_mode = "LEARNED" and all step() calls route
-        # through the learned actor. Assignment rule (model-free policy-gradient
-        # only in Stage 2) is respected.
-        self.seeker_policy = ScriptedSeekerPolicy(self.np_random, self.sim.initial_forward,
+        self.seeker_policy = SeekerBot(self.np_random, self.sim.initial_forward,
                                                  obstacles=self.sim.obstacles)
         self.seeker_mode = "LEARNED"
         self.agents = self.possible_agents.copy()
@@ -81,14 +74,13 @@ class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
         return self.sim.global_state()
 
     def _infos(self, contacts):
-        # The Seeker never receives true hidden distance, bearing or target velocity.
         return {a: {"visible": self.sim.visible, "wall_contact": bool(contacts[a]),
                     "wall_touches": (self.sim.seeker_wall_touches if a == "seeker"
                                      else self.sim.wall_touches)}
                 for a in AGENTS}
 
     def _finish_transition(self, rewards, contacts, truncated):
-        observations = self._observations()  # retain final observations for replay
+        observations = self._observations()
         terminations = {a: False for a in AGENTS}
         truncations = {a: truncated for a in AGENTS}
         infos = self._infos(contacts)
@@ -109,28 +101,22 @@ class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
             return {}, {}, {}, {}, {}
         if set(actions) != set(self.agents):
             raise ValueError("a joint step requires actions for both seeker and evader")
-        # Validate BOTH actions before rotating the camera or moving either drone.
-        seeker = np.clip(checked_vector(actions["seeker"], 5, "seeker action"), -1., 1.)
-        evader = np.clip(checked_vector(actions["evader"], 3, "evader action"), -1., 1.)
+        seeker = np.clip(as_vec(actions["seeker"], 5, "seeker action"), -1., 1.)
+        evader = np.clip(as_vec(actions["evader"], 3, "evader action"), -1., 1.)
         self.seeker_mode = "LEARNED"
-        result = self.sim.advance(limit_velocity(seeker[:3], SEEKER_SPEED),
-                                  limit_velocity(evader, EVADER_SPEED),
+        result = self.sim.advance(cap_speed(seeker[:3], SEEKER_SPEED),
+                                  cap_speed(evader, EVADER_SPEED),
                                   camera_action=seeker[3:])
         return self._finish_transition(*result)
 
     def step_scripted(self, evader_action):
-        """Baseline-only adapter preserving the original instantaneous camera turns.
-
-        Learning always uses step(joint_actions). This adapter advances the very
-        same world, but uses the original TRACK/SCAN/SEARCH controller.
-        """
         if not self.agents:
             raise RuntimeError("call reset before stepping")
-        evader = np.clip(checked_vector(evader_action, 3, "evader action"), -1., 1.)
+        evader = np.clip(as_vec(evader_action, 3, "evader action"), -1., 1.)
         velocity = self.seeker_policy.act(
             self.sim.seeker_pos, self.sim.evader_pos, self.sim.visible)
         self.seeker_mode = self.seeker_policy.mode
-        result = self.sim.advance(velocity, limit_velocity(evader, EVADER_SPEED),
+        result = self.sim.advance(velocity, cap_speed(evader, EVADER_SPEED),
                                   seeker_forward=self.seeker_policy.forward)
         return self._finish_transition(*result)
 
@@ -140,8 +126,8 @@ class VanishingPointParallelEnv(ParallelEnv, RendererMixin):
                               self.sim.total_reward)
 
     def close(self):
-        RendererMixin.close(self)
+        Drawer.close(self)
 
 
 def parallel_env(**kwargs):
-    return VanishingPointParallelEnv(**kwargs)
+    return DroneEnv(**kwargs)

@@ -1,18 +1,14 @@
-"""Shared NumPy dynamics and original scripted Seeker. No PyTorch/PyBullet imports."""
 import math
 from collections import deque
 import numpy as np
 
-# -----------------------------
-# Configuration
-# -----------------------------
 ARENA_X = 20.0
 ARENA_Y = 20.0
 ARENA_Z = 10.0
 ARENA_SIZE = np.array([ARENA_X, ARENA_Y, ARENA_Z], dtype=np.float32)
 
 DT = 0.1
-EPISODE_STEPS = 600  # 60 s at dt=0.1
+EPISODE_STEPS = 600
 
 SEEKER_SPEED = 1.8
 EVADER_SPEED = 2.2
@@ -25,9 +21,8 @@ BOUNDARY_MARGIN = 0.4
 
 REWARD_HIDDEN = 1.0
 REWARD_VISIBLE = -1.0
-REWARD_BOUNDARY = -2.0  # first contact only
+REWARD_BOUNDARY = -2.0
 
-# Seeker search behaviour
 ARRIVE_DIST = 0.5
 SCAN_TIMEOUT = 4.0
 SCAN_YAW_RATE = 100.0
@@ -35,21 +30,13 @@ SCAN_PITCH_MAX = 45.0
 SCAN_PITCH_PERIOD = 2.0
 WAYPOINT_MARGIN = 1.0
 
-# Policy observation choice.
-# False keeps visibility as a reward signal, not an explicit policy input.
-# Set True if you want to match an observation specification that includes it.
-INCLUDE_VISIBILITY_IN_OBS = False
+SHOW_SEEN = False
 
-# Curriculum: difficulty 0.0 is an easy Seeker and 1.0 is the full settings above.
-# Speed, FOV and detection range are blended linearly between the two.
 EASY_SEEKER_SPEED = 1.0
 EASY_FOV_DEG = 60.0
 EASY_DETECTION_RANGE = 6.0
 
 
-# -----------------------------
-# Utility functions
-# -----------------------------
 def normalize(v):
     v = np.asarray(v, dtype=np.float64)
     n = np.linalg.norm(v)
@@ -84,13 +71,8 @@ def inside_valid_arena(pos, margin=BOUNDARY_MARGIN):
     )
 
 
-# -----------------------------
-# Obstacles: axis-aligned boxes ((xmin, ymin, zmin), (xmax, ymax, zmax))
-# -----------------------------
-OBSTACLE_PRESETS = {
+BOX_MAPS = {
     "none": [],
-    # Central wall (drones can fly over it above 6 m), two full-height pillars,
-    # two low blocks and a low canopy: gives real cover without sealing the arena.
     "city": [
         ((9.0, 3.0, 0.0), (11.0, 12.0, 6.0)),
         ((4.0, 14.0, 0.0), (6.0, 16.0, 10.0)),
@@ -99,8 +81,6 @@ OBSTACLE_PRESETS = {
         ((3.0, 4.0, 0.0), (6.0, 7.0, 5.0)),
         ((8.0, 16.0, 0.0), (12.0, 18.0, 3.0)),
     ],
-    # City blocks around an open plaza. The overpass is raised, so the
-    # high start line (y=10, z=8) still clears every box it crosses.
     "maze": [
         ((1.2, 16.0, 0.0), (3.6, 18.8, 10.0)),
         ((6.8, 15.4, 0.0), (12.8, 18.5, 2.2)),
@@ -114,43 +94,39 @@ OBSTACLE_PRESETS = {
         ((15.8, 9.2, 0.0), (16.8, 11.0, 3.5)),
         ((17.8, 9.2, 0.0), (18.8, 11.8, 8.2)),
     ],
-    # Sparse variant: three pillars only.
     "pillars": [
         ((5.0, 5.0, 0.0), (7.0, 7.0, 10.0)),
         ((13.0, 6.0, 0.0), (15.0, 8.0, 10.0)),
         ((9.0, 13.0, 0.0), (11.0, 15.0, 10.0)),
     ],
 }
-# Street lamps and two trees. Drawn only; they do not block flight.
-CITY_LIGHTS = ((4.8, 4.6), (4.8, 14.4), (15.2, 4.4), (15.2, 14.4))
-CITY_TREES = ((6.2, 8.8), (15.0, 4.0))
+LAMPS = ((4.8, 4.6), (4.8, 14.4), (15.2, 4.4), (15.2, 14.4))
+TREES = ((6.2, 8.8), (15.0, 4.0))
 
-OBSTACLE_NEIGHBOURS = 3   # nearest obstacles reported to each actor
-OBSTACLE_SCALE = 10.0     # metres; relative vectors are divided by this
+NEAR_K = 3
+BOX_SCALE = 10.0
 
 
-def make_obstacles(spec):
-    """None | preset name | [[min3, max3], ...] -> float array of shape (N, 2, 3)."""
+def make_boxes(spec):
     if spec is None:
         spec = "none"
     if isinstance(spec, str):
-        if spec not in OBSTACLE_PRESETS:
-            raise ValueError(f"unknown obstacle preset {spec!r}; choose from {sorted(OBSTACLE_PRESETS)}")
-        spec = OBSTACLE_PRESETS[spec]
+        if spec not in BOX_MAPS:
+            raise ValueError(f"unknown obstacle preset {spec!r}; choose from {sorted(BOX_MAPS)}")
+        spec = BOX_MAPS[spec]
     boxes = np.asarray(spec, dtype=np.float64).reshape(-1, 2, 3)
     if not np.all(np.isfinite(boxes)) or np.any(boxes[:, 0] >= boxes[:, 1]):
         raise ValueError("each obstacle needs finite min < max on every axis")
     return boxes
 
 
-def point_in_boxes(point, boxes, margin=0.0):
+def in_box(point, boxes, margin=0.0):
     if len(boxes) == 0:
         return False
     return bool(np.any(np.all((point > boxes[:, 0] - margin) & (point < boxes[:, 1] + margin), axis=1)))
 
 
-def segment_blocked(start, end, boxes):
-    """True when the straight segment start->end passes through any box (slab test)."""
+def ray_hits(start, end, boxes):
     if len(boxes) == 0:
         return False
     start = np.asarray(start, dtype=np.float64)
@@ -173,29 +149,27 @@ def segment_blocked(start, end, boxes):
     return False
 
 
-def resolve_motion(old, proposed, boxes, margin):
-    """Axis-by-axis move that slides along obstacle faces. Returns (position, blocked)."""
+def slide(old, proposed, boxes, margin):
     position, blocked = np.array(old, dtype=np.float64), False
     for axis in range(3):
         candidate = position.copy()
         candidate[axis] = proposed[axis]
-        if point_in_boxes(candidate, boxes, margin):
+        if in_box(candidate, boxes, margin):
             blocked = True
         else:
             position = candidate
     return position, blocked
 
 
-def nearest_obstacle_vectors(position, boxes, k=OBSTACLE_NEIGHBOURS):
-    """Vectors to the closest point of the k nearest obstacles, scaled; far pad if fewer."""
+def close_obs(position, boxes, k=NEAR_K):
     vectors = np.clip(position, boxes[:, 0], boxes[:, 1]) - position
     order = np.argsort(np.linalg.norm(vectors, axis=1))[:k]
     out = np.ones((k, 3))
-    out[:len(order)] = vectors[order] / OBSTACLE_SCALE
+    out[:len(order)] = vectors[order] / BOX_SCALE
     return np.clip(out, -1.0, 1.0).ravel().astype(np.float32)
 
 
-def is_visible(
+def can_see(
     seeker_pos,
     seeker_forward,
     evader_pos,
@@ -216,8 +190,7 @@ def is_visible(
     return bool(visible), float(distance), float(angle_deg)
 
 
-def limit_velocity(action, max_speed):
-    """Map PPO action in [-1,1]^3 to a velocity with bounded magnitude."""
+def cap_speed(action, max_speed):
     direction = np.asarray(action, dtype=np.float64)
     norm = np.linalg.norm(direction)
     if norm > 1.0:
@@ -225,11 +198,7 @@ def limit_velocity(action, max_speed):
     return direction * max_speed
 
 
-# -----------------------------
-# Scripted Seeker
-# -----------------------------
-class ScriptedSeekerPolicy:
-    """Rule-based Seeker: TRACK -> SCAN -> SEARCH, reacquiring when visible."""
+class SeekerBot:
 
     def __init__(self, rng, initial_forward=np.array([1.0, 0.0, 0.0]), speed=SEEKER_SPEED,
                  obstacles=None):
@@ -269,7 +238,6 @@ class ScriptedSeekerPolicy:
 
     def act(self, seeker_pos, evader_pos, visible):
         if self.obstacles is not None:
-            # Give up a path that is pressed against an obstacle instead of pushing forever.
             moved = None if self._prev_pos is None else np.linalg.norm(seeker_pos - self._prev_pos)
             self._prev_pos = np.array(seeker_pos, dtype=np.float64)
             if self.mode in ("TRACK", "SEARCH") and moved is not None:
@@ -296,7 +264,6 @@ class ScriptedSeekerPolicy:
             self._start_scan()
             return np.zeros(3, dtype=np.float64)
 
-        # SCAN: yaw continuously while pitch oscillates.
         self.scan_time += DT
         self.yaw += math.radians(SCAN_YAW_RATE) * DT
         pitch = math.radians(SCAN_PITCH_MAX) * math.sin(
@@ -316,7 +283,7 @@ class ScriptedSeekerPolicy:
             )
             self.waypoint = self.rng.uniform(low, high)
             for _ in range(50):
-                if self.obstacles is None or not point_in_boxes(self.waypoint, self.obstacles, DRONE_RADIUS):
+                if self.obstacles is None or not in_box(self.waypoint, self.obstacles, DRONE_RADIUS):
                     break
                 self.waypoint = self.rng.uniform(low, high)
             self.mode = "SEARCH"
@@ -325,22 +292,16 @@ class ScriptedSeekerPolicy:
         return np.zeros(3, dtype=np.float64)
 
 
-
-def checked_vector(value, size, name):
-    """Reject invalid inputs before any world mutation; clip finite controls elsewhere."""
+def as_vec(value, size, name):
     value = np.asarray(value, dtype=np.float64)
     if value.shape != (size,) or not np.all(np.isfinite(value)):
         raise ValueError(f"{name} must be a finite vector of shape ({size},)")
     return value.copy()
 
 
-def sample_initial_state(rng, randomize_start=True, fov_deg=FOV_DEG,
+def rand_start(rng, randomize_start=True, fov_deg=FOV_DEG,
                          detection_range=DETECTION_RANGE, obstacles=None):
-    """Exactly the Stage 1 visible-start sampler, including its fallback.
-
-    With obstacles, starts must also be clear of them with an unblocked line of sight.
-    """
-    boxes = make_obstacles(obstacles)
+    boxes = make_boxes(obstacles)
     if randomize_start:
         for _ in range(200 if len(boxes) == 0 else 2000):
             seeker = rng.uniform([3.0, 3.0, 2.0], [17.0, 17.0, 8.0])
@@ -349,20 +310,20 @@ def sample_initial_state(rng, randomize_start=True, fov_deg=FOV_DEG,
                 continue
             direction = normalize(forward + rng.normal(0.0, 0.18, size=3))
             evader = seeker + direction * rng.uniform(4.0, 8.0)
-            if inside_valid_arena(evader, margin=1.0) and is_visible(
+            if inside_valid_arena(evader, margin=1.0) and can_see(
                     seeker, forward, evader, fov_deg, detection_range)[0]:
-                if len(boxes) and (point_in_boxes(seeker, boxes, 1.0) or point_in_boxes(evader, boxes, 1.0)
-                                   or segment_blocked(seeker, evader, boxes)):
+                if len(boxes) and (in_box(seeker, boxes, 1.0) or in_box(evader, boxes, 1.0)
+                                   or ray_hits(seeker, evader, boxes)):
                     continue
                 return seeker, evader, forward
-    if len(boxes):  # high fallback: above every preset obstacle
+    if len(boxes):
         return (np.array([4.0, 10.0, 8.0]), np.array([12.0, 10.0, 8.0]),
                 np.array([1.0, 0.0, 0.0]))
     return (np.array([4.0, 10.0, 5.0]), np.array([12.0, 10.0, 5.0]),
             np.array([1.0, 0.0, 0.0]))
 
 
-def boundary_distances(position):
+def wall_dist(position):
     return np.array([position[0] / ARENA_X, (ARENA_X - position[0]) / ARENA_X,
                      position[1] / ARENA_Y, (ARENA_Y - position[1]) / ARENA_Y,
                      position[2] / ARENA_Z, (ARENA_Z - position[2]) / ARENA_Z],
@@ -370,7 +331,6 @@ def boundary_distances(position):
 
 
 class Simulator:
-    """NumPy world dynamics shared by Gymnasium and PettingZoo; no RL/render imports."""
 
     def __init__(self, episode_steps=EPISODE_STEPS, randomize_start=True,
                  yaw_rate_deg=100.0, pitch_rate_deg=90.0, pitch_limit_deg=89.0,
@@ -388,11 +348,7 @@ class Simulator:
             raise ValueError("turn rates must be positive and pitch limit in (0, 90]")
         if not np.isfinite(boundary_penalty_per_step) or boundary_penalty_per_step < 0:
             raise ValueError("boundary_penalty_per_step must be finite and non-negative")
-        # 0 keeps the Stage 1 rule (penalty on first contact only).
         self.boundary_penalty_per_step = boundary_penalty_per_step
-        # Asymmetric wall shaping: Evader hugging the wall is the dominant exploit, so the
-        # Seeker chasing into a corner should not be punished at the same rate. If no
-        # per-agent override is given, keep the symmetric behaviour.
         if seeker_boundary_penalty_per_step is None:
             self.seeker_boundary_penalty_per_step = boundary_penalty_per_step
         else:
@@ -400,9 +356,7 @@ class Simulator:
                     or seeker_boundary_penalty_per_step < 0):
                 raise ValueError("seeker_boundary_penalty_per_step must be finite and non-negative")
             self.seeker_boundary_penalty_per_step = seeker_boundary_penalty_per_step
-        # Optional Seeker memory: last-known Evader velocity (dead-reckon input).
         self.include_last_known_velocity = bool(include_last_known_velocity)
-        # Asymmetric per-sighting reward magnitudes. None keeps the symmetric Stage 1 rule.
         if seeker_visible_bonus is not None and (not np.isfinite(seeker_visible_bonus) or seeker_visible_bonus < 0):
             raise ValueError("seeker_visible_bonus must be finite and non-negative")
         if evader_hidden_bonus is not None and (not np.isfinite(evader_hidden_bonus) or evader_hidden_bonus < 0):
@@ -414,11 +368,10 @@ class Simulator:
         self.seeker_proximity_coef = float(seeker_proximity_coef)
         if type(seeker_history) is not int or seeker_history < 1 or type(seeker_history_stride) is not int or seeker_history_stride < 1:
             raise ValueError("seeker_history and seeker_history_stride must be positive integers")
-        # The learned Seeker may see k past observations spaced `stride` steps apart (1 = no history).
         self.seeker_history, self.seeker_history_stride = seeker_history, seeker_history_stride
         self._seeker_frames = deque(maxlen=(seeker_history - 1) * seeker_history_stride + 1)
-        self.obstacles = make_obstacles(obstacles)
-        self.obs_extra = OBSTACLE_NEIGHBOURS * 3 if len(self.obstacles) else 0
+        self.obstacles = make_boxes(obstacles)
+        self.obs_extra = NEAR_K * 3 if len(self.obstacles) else 0
         self.episode_steps = episode_steps
         self.randomize_start = randomize_start
         self.yaw_rate = math.radians(yaw_rate_deg)
@@ -431,19 +384,19 @@ class Simulator:
 
     def reset_world(self, rng, initial_state=None):
         if initial_state is None:
-            seeker, evader, forward = sample_initial_state(
+            seeker, evader, forward = rand_start(
                 rng, self.randomize_start, self.fov_deg, self.detection_range, self.obstacles)
         else:
             if set(initial_state) != {"seeker_pos", "evader_pos", "seeker_forward"}:
                 raise ValueError("initial_state requires seeker_pos, evader_pos, seeker_forward")
-            seeker = checked_vector(initial_state["seeker_pos"], 3, "seeker_pos")
-            evader = checked_vector(initial_state["evader_pos"], 3, "evader_pos")
-            forward = checked_vector(initial_state["seeker_forward"], 3, "seeker_forward")
+            seeker = as_vec(initial_state["seeker_pos"], 3, "seeker_pos")
+            evader = as_vec(initial_state["evader_pos"], 3, "evader_pos")
+            forward = as_vec(initial_state["seeker_forward"], 3, "seeker_forward")
             if any(not np.array_equal(pos, clamp_position(pos)) for pos in (seeker, evader)):
                 raise ValueError("initial positions must be inside the arena boundary margin")
             if np.linalg.norm(forward) < 1e-8:
                 raise ValueError("seeker_forward cannot be zero")
-            if any(point_in_boxes(pos, self.obstacles, DRONE_RADIUS) for pos in (seeker, evader)):
+            if any(in_box(pos, self.obstacles, DRONE_RADIUS) for pos in (seeker, evader)):
                 raise ValueError("initial positions must be outside every obstacle")
             forward = normalize(forward)
         self.seeker_pos, self.evader_pos = seeker.copy(), evader.copy()
@@ -475,14 +428,14 @@ class Simulator:
         return self.visible, self.distance, self.angle
 
     def set_camera_forward(self, forward):
-        self.camera_forward = normalize(checked_vector(forward, 3, "seeker_forward"))
+        self.camera_forward = normalize(as_vec(forward, 3, "seeker_forward"))
         if np.linalg.norm(self.camera_forward) < 1e-8:
             raise ValueError("seeker_forward cannot be zero")
         self.camera_yaw = math.atan2(self.camera_forward[1], self.camera_forward[0])
         self.camera_pitch = math.asin(float(np.clip(self.camera_forward[2], -1.0, 1.0)))
 
     def rotate_camera(self, controls):
-        controls = np.clip(checked_vector(controls, 2, "camera action"), -1.0, 1.0)
+        controls = np.clip(as_vec(controls, 2, "camera action"), -1.0, 1.0)
         self.camera_yaw = (self.camera_yaw + controls[0] * self.yaw_rate * DT
                            + math.pi) % (2 * math.pi) - math.pi
         self.camera_pitch = float(np.clip(
@@ -493,10 +446,10 @@ class Simulator:
                                        math.cos(pitch) * math.sin(yaw), math.sin(pitch)])
 
     def check_visibility(self):
-        visible, distance, angle = is_visible(self.seeker_pos, self.camera_forward, self.evader_pos,
+        visible, distance, angle = can_see(self.seeker_pos, self.camera_forward, self.evader_pos,
                                               self.fov_deg, self.detection_range)
-        if visible and segment_blocked(self.seeker_pos, self.evader_pos, self.obstacles):
-            visible = False  # obstacles block the line of sight
+        if visible and ray_hits(self.seeker_pos, self.evader_pos, self.obstacles):
+            visible = False
         return visible, distance, angle
 
     def _update_detection_memory(self):
@@ -507,31 +460,24 @@ class Simulator:
 
     def advance(self, seeker_velocity, evader_velocity, *, camera_action=None,
                 seeker_forward=None):
-        """Commit one joint transition. All inputs are checked before mutation.
-
-        Scripted baselines supply an absolute forward vector (their original
-        instantaneous turns); learned Seekers supply bounded yaw/pitch rates.
-        """
         if self.seeker_pos is None:
             raise RuntimeError("reset the simulator before stepping")
         if self.step_count >= self.episode_steps:
             raise RuntimeError("episode is complete; call reset")
-        seeker_velocity = checked_vector(seeker_velocity, 3, "seeker velocity")
-        evader_velocity = checked_vector(evader_velocity, 3, "evader velocity")
+        seeker_velocity = as_vec(seeker_velocity, 3, "seeker velocity")
+        evader_velocity = as_vec(evader_velocity, 3, "evader velocity")
         if camera_action is not None and seeker_forward is not None:
             raise ValueError("provide camera_action or seeker_forward, not both")
         if camera_action is not None:
-            checked_vector(camera_action, 2, "camera action")
+            as_vec(camera_action, 2, "camera action")
         if seeker_forward is not None:
-            checked_vector(seeker_forward, 3, "seeker_forward")
+            as_vec(seeker_forward, 3, "seeker_forward")
             if np.linalg.norm(seeker_forward) < 1e-8:
                 raise ValueError("seeker_forward cannot be zero")
         if camera_action is not None:
             self.rotate_camera(camera_action)
         elif seeker_forward is not None:
             self.set_camera_forward(seeker_forward)
-            # Scripted policy already normalizes this vector. Preserve its exact
-            # value so Stage 1 FOV angles do not acquire re-normalization drift.
             self.camera_forward = np.asarray(seeker_forward, dtype=np.float64).copy()
         self.seeker_velocity, self.evader_velocity = seeker_velocity, evader_velocity
         proposed = {"seeker": self.seeker_pos + seeker_velocity * DT,
@@ -539,9 +485,8 @@ class Simulator:
         obstacle_hit = {"seeker": False, "evader": False}
         if len(self.obstacles):
             for name, old in (("seeker", self.seeker_pos), ("evader", self.evader_pos)):
-                proposed[name], obstacle_hit[name] = resolve_motion(
+                proposed[name], obstacle_hit[name] = slide(
                     old, proposed[name], self.obstacles, DRONE_RADIUS)
-        # An obstacle collision is scored exactly like a wall contact.
         contacts = {a: hit_boundary(pos) or obstacle_hit[a] for a, pos in proposed.items()}
         fresh = {"seeker": contacts["seeker"] and not self.seeker_was_on_boundary,
                  "evader": contacts["evader"] and not self.evader_was_on_boundary}
@@ -549,18 +494,14 @@ class Simulator:
         self.evader_pos = clamp_position(proposed["evader"])
         was_visible = self.visible
         self.visible, self.distance, self.angle = self.check_visibility()
-        # Asymmetric magnitudes let the Seeker's "I saw you" signal be larger than
-        # the Evader's "I'm hidden" signal, flipping the Evader-favoured game bias.
         if self.visible:
-            evader_reward = REWARD_VISIBLE  # -1
+            evader_reward = REWARD_VISIBLE
             seeker_reward = (self.seeker_visible_bonus
                              if self.seeker_visible_bonus is not None else -REWARD_VISIBLE)
         else:
             evader_reward = (self.evader_hidden_bonus
                              if self.evader_hidden_bonus is not None else REWARD_HIDDEN)
-            seeker_reward = -REWARD_HIDDEN  # -1
-        # Dense proximity bonus for the Seeker so it keeps a signal during long
-        # hidden stretches (uses true position; still just reward shaping, not a policy).
+            seeker_reward = -REWARD_HIDDEN
         if self.seeker_proximity_coef:
             dist = float(np.linalg.norm(self.seeker_pos - self.evader_pos))
             seeker_reward += self.seeker_proximity_coef / (1.0 + dist)
@@ -583,7 +524,6 @@ class Simulator:
         self.step_count += 1
         if self.visible and self.first_detection_step is None:
             self.first_detection_step = self.step_count
-        # Drone-to-drone collision: bodies overlap (centres closer than two drone radii). Measured only.
         overlapping = bool(np.linalg.norm(self.seeker_pos - self.evader_pos) < 2 * DRONE_RADIUS)
         self.drone_collision_steps += int(overlapping)
         self.drone_collision_events += int(overlapping and not self._drones_overlapping)
@@ -615,11 +555,11 @@ class Simulator:
                  ((self.seeker_pos - self.evader_pos) / ARENA_SIZE).astype(np.float32),
                  ((self.seeker_velocity - self.evader_velocity)
                   / (SEEKER_SPEED + EVADER_SPEED)).astype(np.float32),
-                 self.camera_forward.astype(np.float32), boundary_distances(self.evader_pos)]
+                 self.camera_forward.astype(np.float32), wall_dist(self.evader_pos)]
         if include_visibility:
             parts.append(np.array([float(self.visible)], dtype=np.float32))
         if self.obs_extra:
-            parts.append(nearest_obstacle_vectors(self.evader_pos, self.obstacles))
+            parts.append(close_obs(self.evader_pos, self.obstacles))
         return self._bounded_observation(parts)
 
     def _push_seeker_frame(self):
@@ -627,7 +567,6 @@ class Simulator:
             self._seeker_frames.append(self._seeker_base_observation())
 
     def seeker_observation(self):
-        """Newest observation first, then older ones `stride` steps apart (oldest repeated to pad)."""
         if self.seeker_history == 1:
             return self._seeker_base_observation()
         frames = self._seeker_frames
@@ -636,15 +575,13 @@ class Simulator:
         return np.concatenate(stacked).astype(np.float32)
 
     def _seeker_base_observation(self):
-        # Relative current target only when visible; stale last-seen target otherwise.
-        # Optionally also last-seen velocity (dead-reckoning input), enabled per config.
         known = self.last_known_position is not None
         relative = ((self.last_known_position - self.seeker_pos) / ARENA_SIZE
                     if known else np.zeros(3))
         center = ARENA_SIZE / 2.0
         parts = [
             (self.seeker_pos - center) / center, self.seeker_velocity / SEEKER_SPEED,
-            self.camera_forward, boundary_distances(self.seeker_pos),
+            self.camera_forward, wall_dist(self.seeker_pos),
             [float(self.visible)], relative, [float(known)],
             [min(self.time_since_detection_steps / self.episode_steps, 1.0)]]
         if self.include_last_known_velocity:
@@ -652,12 +589,11 @@ class Simulator:
                         if known else np.zeros(3))
             parts.append(last_vel)
         if self.obs_extra:
-            parts.append(nearest_obstacle_vectors(self.seeker_pos, self.obstacles))
+            parts.append(close_obs(self.seeker_pos, self.obstacles))
         return self._bounded_observation(parts)
 
     @property
     def seeker_base_obs_dim(self):
-        """21 base + 3 if last-known velocity is enabled + obstacle neighbours."""
         return 21 + (3 if self.include_last_known_velocity else 0) + self.obs_extra
 
     @staticmethod
@@ -668,7 +604,6 @@ class Simulator:
         return np.clip(obs, -1.0, 1.0)
 
     def global_state(self):
-        """26 normalized values for critics only, including hidden target state."""
         center = ARENA_SIZE / 2.0
         known = self.last_known_position is not None
         last = ((self.last_known_position - center) / center if known else np.zeros(3))

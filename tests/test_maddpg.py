@@ -1,12 +1,11 @@
-"""Learning, replay, checkpoint and frozen-opponent integration tests."""
 import copy
 from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from vp.maddpg import MADDPG, ReplayBuffer, load_config, bellman_target
+from vp.maddpg import MADDPG, MemBuf, load_config, q_backup
 from scripts.train_maddpg import train, noise_at
-from vp.parallel import VanishingPointParallelEnv, AGENTS
+from vp.parallel import DroneEnv, AGENTS
 
 
 def small_config():
@@ -18,11 +17,11 @@ def small_config():
 
 
 def setup_batch(config):
-    env = VanishingPointParallelEnv(**config["environment"])
+    env = DroneEnv(**config["environment"])
     dimensions = {a: env.observation_space(a).shape[0] for a in AGENTS}
     actions = {a: env.action_space(a).shape[0] for a in AGENTS}
     learner = MADDPG(dimensions, actions, 26, config)
-    replay = ReplayBuffer(config["replay_capacity"], dimensions, actions, 26, seed=11)
+    replay = MemBuf(config["replay_capacity"], dimensions, actions, 26, seed=11)
     obs, _ = env.reset(seed=11)
     for _ in range(16):
         if not env.agents:
@@ -67,7 +66,7 @@ def test_frozen_opponent_used_for_targets_and_not_updated():
 def test_time_limit_bootstraps_but_termination_does_not():
     rewards = torch.tensor([[1.], [1.]])
     terminal = torch.tensor([[0.], [1.]])
-    result = bellman_target(rewards, terminal, torch.tensor([[10.], [10.]]), .9)
+    result = q_backup(rewards, terminal, torch.tensor([[10.], [10.]]), .9)
     torch.testing.assert_close(result, torch.tensor([[10.], [1.]]))
 
 
@@ -203,8 +202,8 @@ def test_flagged_frozen_next_actions_only_replace_flagged_rows():
 
     replay.frozen[:] = 0.0
     learner.update(replay, ("seeker",), {"evader": frozen}, flagged_only=True)
-    assert seen == []                      # nothing flagged -> frozen policy never queried
-    replay.frozen[:5, 1] = 1.0  # column 1 = the Evader
+    assert seen == []
+    replay.frozen[:5, 1] = 1.0
     learner.update(replay, ("seeker",), {"evader": frozen}, flagged_only=True)
     assert seen and all(n <= config["batch_size"] for n in seen)
 
@@ -219,7 +218,7 @@ def test_frozen_next_action_enters_other_critics_but_never_the_frozen_agents_own
             lambda module, inputs, output, name=agent: seen.__setitem__(name, inputs[1].detach().clone()))
     constant = lambda next_obs: np.full((len(next_obs), 3), 0.123, np.float32)
     learner.update(replay, AGENTS, {"evader": constant}, flagged_only=True)
-    evader_slice = slice(5, 8)  # joint action layout: seeker(5) then evader(3)
+    evader_slice = slice(5, 8)
     assert torch.allclose(seen["seeker"][:, evader_slice], torch.full((config["batch_size"], 3), 0.123))
     assert not torch.allclose(seen["evader"][:, evader_slice], torch.full((config["batch_size"], 3), 0.123))
 
@@ -227,7 +226,7 @@ def test_frozen_next_action_enters_other_critics_but_never_the_frozen_agents_own
 def test_frozen_seeker_action_enters_the_evaders_critic_but_never_the_seekers_own():
     config = small_config()
     learner, replay = setup_batch(config)
-    replay.frozen[:, 0] = 1.0  # column 0 = the Seeker
+    replay.frozen[:, 0] = 1.0
     seen = {}
     for agent in AGENTS:
         learner.target_critics[agent].register_forward_hook(
@@ -241,18 +240,18 @@ def test_frozen_seeker_action_enters_the_evaders_critic_but_never_the_seekers_ow
 
 def test_opponent_provider_uses_each_rows_own_snapshot_and_flags_evicted_rows():
     from vp.maddpg import Actor
-    from vp.opponents import OpponentProvider
+    from vp.opponents import OppPool
     torch.manual_seed(0)
     build = lambda: Actor(21, 3, [8, 8])
-    provider = OpponentProvider("evader", 3, fixed=None, capacity=2, build_actor=build)
+    provider = OppPool("evader", 3, fixed=None, capacity=2, build_actor=build)
     nets = [build() for _ in range(3)]
-    ids = [provider.add_snapshot(net.state_dict()) for net in nets]  # capacity 2 evicts the first
+    ids = [provider.add_snapshot(net.state_dict()) for net in nets]
     obs = np.random.default_rng(0).normal(size=(4, 21)).astype(np.float32)
     out = provider.batch(obs, np.array([ids[1], ids[2], ids[1], ids[0]]))
     expected = [np.clip(nets[1](torch.as_tensor(obs[0])).detach().numpy(), -1, 1),
                 np.clip(nets[2](torch.as_tensor(obs[1])).detach().numpy(), -1, 1)]
     assert np.allclose(out[0], expected[0], atol=1e-6) and np.allclose(out[1], expected[1], atol=1e-6)
-    assert np.all(np.isnan(out[3]))                     # evicted snapshot -> caller must fall back
+    assert np.all(np.isnan(out[3]))
     assert provider.snapshot_ids() == ids[1:]
 
 
